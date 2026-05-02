@@ -23,7 +23,7 @@ const ROCA_ID = '996919845373366362';    // Roca
 
 // ===== CLIENT =====
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
 });
 
 let submissions = {};
@@ -217,31 +217,39 @@ client.on('interactionCreate', async interaction => {
           return interaction.editReply({ content: `❌ You already have an open ticket: <#${existing.id}>` });
         }
 
+        // Fetch members so Discord.js can resolve them in permission overwrites
+        const ownerMember = await interaction.guild.members.fetch(OWNER_ID).catch(() => null);
+        const rocaMember = await interaction.guild.members.fetch(ROCA_ID).catch(() => null);
+
+        const permissionOverwrites = [
+          {
+            id: interaction.guild.id,
+            deny: [PermissionFlagsBits.ViewChannel],
+          },
+          {
+            id: interaction.user.id,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+          },
+          {
+            id: client.user.id,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+          }
+        ];
+
+        if (ownerMember) permissionOverwrites.push({
+          id: ownerMember.id,
+          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+        });
+
+        if (rocaMember) permissionOverwrites.push({
+          id: rocaMember.id,
+          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+        });
+
         const channel = await interaction.guild.channels.create({
           name: `ticket-${interaction.user.username}`,
           type: ChannelType.GuildText,
-          permissionOverwrites: [
-            {
-              id: interaction.guild.id,
-              deny: [PermissionFlagsBits.ViewChannel],
-            },
-            {
-              id: interaction.user.id,
-              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-            },
-            {
-              id: OWNER_ID,
-              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-            },
-            {
-              id: ROCA_ID,
-              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-            },
-            {
-              id: client.user.id,
-              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-            }
-          ]
+          permissionOverwrites
         });
 
         // Ping Cilord and Roca so they get notified
