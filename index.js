@@ -192,11 +192,10 @@ client.on('interactionCreate', async interaction => {
     // ===== BUTTONS =====
     if (interaction.isButton()) {
 
-      // IMPORTANT: defer ONCE
-      await interaction.deferReply({ ephemeral: true });
-
       // ===== OPEN TICKET =====
       if (interaction.customId === 'open_ticket') {
+
+        await interaction.deferReply({ ephemeral: true });
 
         const existing = interaction.guild.channels.cache.find(
           c => c.name === `ticket-${interaction.user.username}`
@@ -227,7 +226,7 @@ client.on('interactionCreate', async interaction => {
               allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages],
             },
             {
-              id: client.user.id, // BOT ACCESS FIX
+              id: client.user.id,
               allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages],
             }
           ]
@@ -240,11 +239,14 @@ client.on('interactionCreate', async interaction => {
 
       // ===== SUBMIT BUTTON =====
       if (interaction.customId === 'submit_clip') {
+        await interaction.deferReply({ ephemeral: true });
         return interaction.editReply({ content: 'Use /submit' });
       }
 
       // ===== VIEW SUBMISSIONS =====
       if (interaction.customId === 'view_submissions') {
+
+        await interaction.deferReply({ ephemeral: true });
 
         const userSubs = Object.entries(submissions)
           .filter(([id, s]) => s.user === interaction.user.id);
@@ -271,7 +273,9 @@ client.on('interactionCreate', async interaction => {
       // ===== APPROVE / REJECT =====
       const [action, id] = interaction.customId.split('_');
 
-      if (submissions[id]) {
+      if ((action === 'approve' || action === 'reject') && submissions[id]) {
+
+        await interaction.deferUpdate();
 
         if (action === 'approve') submissions[id].status = 'Approved';
         if (action === 'reject') submissions[id].status = 'Rejected';
