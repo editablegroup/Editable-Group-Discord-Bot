@@ -8,6 +8,11 @@ const {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   ChannelType,
   PermissionFlagsBits
 } = require('discord.js');
@@ -21,6 +26,16 @@ const SUBMISSIONS_CHANNEL_ID = '1498679979666444378';
 const OWNER_ID = '960171711674847282';   // Cilord
 const ROCA_ID = '996919845373366362';    // Roca
 
+// ===== CAMPAIGNS =====
+// To add or remove campaigns, edit this list.
+// 'label' is what users see in the dropdown.
+// 'value' must be unique, lowercase, no spaces.
+const CAMPAIGNS = [
+  { label: 'Alter Ego - Doechii Ft. JT', value: 'alter_ego_doechii' },
+  // Add more campaigns below like this:
+  // { label: 'Campaign Name Here', value: 'campaign_value_here' },
+];
+
 // ===== CLIENT =====
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
@@ -29,16 +44,11 @@ const client = new Client({
 let submissions = {};
 let counter = 1;
 
+// Temporarily stores which campaign a user selected before the modal opens
+let pendingCampaign = {};
+
 // ===== COMMANDS =====
 const commands = [
-  new SlashCommandBuilder()
-    .setName('submit')
-    .setDescription('Submit a post')
-    .addStringOption(opt =>
-      opt.setName('campaign').setDescription('Campaign').setRequired(true))
-    .addStringOption(opt =>
-      opt.setName('link').setDescription('TikTok link').setRequired(true)),
-
   new SlashCommandBuilder()
     .setName('mysubmissions')
     .setDescription('View your submissions'),
@@ -77,52 +87,6 @@ client.once('ready', () => {
 
 // ===== INTERACTIONS =====
 client.on('interactionCreate', async interaction => {
-
-  // ===== SUBMIT =====
-  if (interaction.isChatInputCommand() && interaction.commandName === 'submit') {
-    try {
-      const campaign = interaction.options.getString('campaign');
-      const link = interaction.options.getString('link');
-      const id = counter++;
-
-      submissions[id] = {
-        user: interaction.user.id,
-        campaign,
-        link,
-        status: 'Pending'
-      };
-
-      const channel = await client.channels.fetch(SUBMISSIONS_CHANNEL_ID);
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`approve_${id}`)
-          .setLabel('Approve')
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(`reject_${id}`)
-          .setLabel('Reject')
-          .setStyle(ButtonStyle.Danger)
-      );
-
-      await channel.send({
-        content:
-`📩 Submission #${id}
-👤 <@${interaction.user.id}>
-🎯 ${campaign}
-🔗 <${link}>
-📊 Status: Pending`,
-        components: [row]
-      });
-
-      await interaction.reply({ content: '✅ Submitted', ephemeral: true });
-    } catch (err) {
-      console.error('Submit error:', err);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: '❌ Something went wrong. Please try again.', ephemeral: true }).catch(() => {});
-      }
-    }
-  }
 
   // ===== MY SUBMISSIONS =====
   if (interaction.isChatInputCommand() && interaction.commandName === 'mysubmissions') {
@@ -178,13 +142,13 @@ client.on('interactionCreate', async interaction => {
     try {
       const embed = new EmbedBuilder()
         .setColor(0x2b2d31)
-        .setTitle('🎬 Submissions')
-        .setDescription('Use buttons below');
+        .setTitle('🎬 Manage Your Submissions')
+        .setDescription('Use the buttons below.\n\n📤 Submit edits\n📊 View your submissions');
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId('submit_clip')
-          .setLabel('Submit Clip')
+          .setLabel('Submit Edit')
           .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
           .setCustomId('view_submissions')
@@ -217,7 +181,6 @@ client.on('interactionCreate', async interaction => {
           return interaction.editReply({ content: `❌ You already have an open ticket: <#${existing.id}>` });
         }
 
-        // Fetch members so Discord.js can resolve them in permission overwrites
         const ownerMember = await interaction.guild.members.fetch(OWNER_ID).catch(() => null);
         const rocaMember = await interaction.guild.members.fetch(ROCA_ID).catch(() => null);
 
@@ -252,7 +215,6 @@ client.on('interactionCreate', async interaction => {
           permissionOverwrites
         });
 
-        // Ping Cilord and Roca so they get notified
         await channel.send(
           `🎟️ New ticket opened by <@${interaction.user.id}>!\n<@${OWNER_ID}> <@${ROCA_ID}> — please assist when available.\n\nType \`/close\` to close this ticket when resolved.`
         );
@@ -265,14 +227,33 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // ===== SUBMIT BUTTON =====
+    // ===== SUBMIT EDIT BUTTON — show campaign dropdown =====
     if (interaction.customId === 'submit_clip') {
-      await interaction.deferReply({ ephemeral: true });
       try {
-        return interaction.editReply({ content: 'Use /submit to submit a clip.' });
+        const selectMenu = new StringSelectMenuBuilder()
+          .setCustomId('campaign_select')
+          .setPlaceholder('Select a campaign')
+          .addOptions(
+            CAMPAIGNS.map(c =>
+              new StringSelectMenuOptionBuilder()
+                .setLabel(c.label)
+                .setValue(c.value)
+            )
+          );
+
+        const row = new ActionRowBuilder().addComponents(selectMenu);
+
+        const embed = new EmbedBuilder()
+          .setColor(0x2b2d31)
+          .setTitle('🎯 Select a Campaign')
+          .setDescription('Please choose the campaign you want to submit your edit to from the dropdown below.');
+
+        await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
       } catch (err) {
-        console.error('Submit clip error:', err);
-        return interaction.editReply({ content: '❌ Something went wrong.' }).catch(() => {});
+        console.error('Submit edit button error:', err);
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({ content: '❌ Something went wrong. Please try again.', ephemeral: true }).catch(() => {});
+        }
       }
     }
 
@@ -306,10 +287,11 @@ client.on('interactionCreate', async interaction => {
       try {
         await interaction.deferUpdate();
 
-        if (action === 'approve') submissions[id].status = 'Approved ✅';
-        if (action === 'reject') submissions[id].status = 'Rejected ❌';
+        const isApproved = action === 'approve';
+        submissions[id].status = isApproved ? 'Approved ✅' : 'Rejected ❌';
 
-        return interaction.message.edit({
+        // Update the submission message in #submissions
+        await interaction.message.edit({
           content:
 `📩 Submission #${id}
 👤 <@${submissions[id].user}>
@@ -318,9 +300,127 @@ client.on('interactionCreate', async interaction => {
 📊 Status: ${submissions[id].status}`,
           components: []
         });
+
+        // DM the user who submitted
+        try {
+          const submitter = await client.users.fetch(submissions[id].user);
+
+          const dmEmbed = new EmbedBuilder()
+            .setColor(isApproved ? 0x57f287 : 0xed4245)
+            .setTitle(isApproved ? '✅ Submission Approved!' : '❌ Submission Rejected')
+            .setDescription(isApproved
+              ? 'Your submission has been reviewed and **approved**. Thank you!'
+              : 'Your submission has been reviewed and **rejected**. Feel free to open a ticket if you have any questions.')
+            .addFields(
+              { name: '🎯 Campaign', value: submissions[id].campaign, inline: true },
+              { name: '🔗 Link', value: submissions[id].link, inline: true }
+            )
+            .setTimestamp();
+
+          await submitter.send({ embeds: [dmEmbed] });
+        } catch (dmErr) {
+          // User has DMs disabled — silently skip
+          console.log(`Could not DM user ${submissions[id].user} — they likely have DMs disabled.`);
+        }
+
       } catch (err) {
         console.error('Approve/reject error:', err);
       }
+    }
+  }
+
+  // ===== CAMPAIGN SELECT MENU — show modal =====
+  if (interaction.isStringSelectMenu() && interaction.customId === 'campaign_select') {
+    try {
+      const selectedValue = interaction.values[0];
+      const selectedCampaign = CAMPAIGNS.find(c => c.value === selectedValue);
+
+      // Store the selected campaign for this user so we can use it when the modal is submitted
+      pendingCampaign[interaction.user.id] = selectedCampaign.label;
+
+      // Build the modal (popup form)
+      const modal = new ModalBuilder()
+        .setCustomId('submit_modal')
+        .setTitle('Submit an edit');
+
+      const clipNameInput = new TextInputBuilder()
+        .setCustomId('clip_name')
+        .setLabel('Edit Name')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('e.g. My Awesome Edit')
+        .setRequired(false);
+
+      const clipLinkInput = new TextInputBuilder()
+        .setCustomId('clip_link')
+        .setLabel('Edit Link')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('e.g. https://www.tiktok.com/@user/video/...')
+        .setRequired(true);
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(clipNameInput),
+        new ActionRowBuilder().addComponents(clipLinkInput)
+      );
+
+      // Show the modal — must be done directly, no defer
+      await interaction.showModal(modal);
+    } catch (err) {
+      console.error('Campaign select error:', err);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: '❌ Something went wrong. Please try again.', ephemeral: true }).catch(() => {});
+      }
+    }
+  }
+
+  // ===== MODAL SUBMIT =====
+  if (interaction.isModalSubmit() && interaction.customId === 'submit_modal') {
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const clipName = interaction.fields.getTextInputValue('clip_name') || 'Untitled';
+      const clipLink = interaction.fields.getTextInputValue('clip_link');
+      const campaign = pendingCampaign[interaction.user.id] || 'Unknown Campaign';
+
+      // Clear the pending campaign for this user
+      delete pendingCampaign[interaction.user.id];
+
+      const id = counter++;
+
+      submissions[id] = {
+        user: interaction.user.id,
+        campaign,
+        clipName,
+        link: clipLink,
+        status: 'Pending'
+      };
+
+      const submissionsChannel = await client.channels.fetch(SUBMISSIONS_CHANNEL_ID);
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`approve_${id}`)
+          .setLabel('Approve')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`reject_${id}`)
+          .setLabel('Reject')
+          .setStyle(ButtonStyle.Danger)
+      );
+
+      await submissionsChannel.send({
+        content:
+`📩 Submission #${id}
+👤 <@${interaction.user.id}>
+🎯 ${campaign}
+🎬 ${clipName}
+🔗 <${clipLink}>
+📊 Status: Pending`,
+        components: [row]
+      });
+
+      await interaction.editReply({ content: '✅ Your edit has been submitted! You will receive a DM once it has been reviewed.' });
+    } catch (err) {
+      console.error('Modal submit error:', err);
+      return interaction.editReply({ content: '❌ Something went wrong. Please try again.' }).catch(() => {});
     }
   }
 
