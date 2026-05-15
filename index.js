@@ -32,7 +32,7 @@ const ROCA_ID = '996919845373366362';    // Roca
 // 'value' must be unique, lowercase, no spaces.
 const CAMPAIGNS = [
   { label: 'Alter Ego - Doechii Ft. JT', value: 'alter_ego_doechii' },
-  // Add more campaigns below like this:
+  { label: 'SHAKE THAT - JIG LeFrost', value: 'shake_that_jig' },
   // { label: 'Campaign Name Here', value: 'campaign_value_here' },
 ];
 
