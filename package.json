@@ -1,15 +1,13 @@
 {
   "name": "editable-group-bot",
   "version": "1.0.0",
-  "description": "",
-  "license": "ISC",
-  "author": "",
-  "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js"
   },
   "dependencies": {
-    "discord.js": "^14.26.3"
+    "discord.js": "^14.0.0",
+    "mongodb": "^6.0.0",
+    "googleapis": "^140.0.0"
   }
 }
