@@ -253,7 +253,9 @@ async function fetchTikTokStats(videoId) {
       `https://tiktok-api23.p.rapidapi.com/api/post/detail?videoId=${videoId}`,
       { method: 'GET', headers: { 'x-rapidapi-key': RAPIDAPI_KEY, 'x-rapidapi-host': RAPIDAPI_HOST } }
     );
-    const data = await res.json();
+    const text = await res.text();
+    console.log(`[API Raw] ${videoId}:`, text.slice(0, 300));
+    const data = JSON.parse(text);
     const item = data?.itemList?.[0];
     if (!item) return null;
     return { views: item.stats?.playCount || 0, likes: item.stats?.diggCount || 0 };
