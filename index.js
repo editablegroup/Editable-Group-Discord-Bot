@@ -24,12 +24,17 @@ const TOKEN = process.env.TOKEN;
 const CLIENT_ID = '1498623710301650994';
 const GUILD_ID = '1437187584689438865';
 const SUBMISSIONS_CHANNEL_ID = '1498679979666444378';
-const OWNER_ID = '960171711674847282';
-const ROCA_ID = '996919845373366362';
+const OWNER_ID = '960171711674847282';   // Cilord
+const ROCA_ID = '996919845373366362';    // Roca
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const RAPIDAPI_HOST = 'tiktok-api23.p.rapidapi.com';
 const DRIVE_FOLDER_ID = '1gDspJmanWRPDtR8MwBivjMj9MEpkUBkK';
 const OFFICIAL_EMAIL = 'official@editablegroup.co.uk';
+
+// Only Cilord and Roca can use owner-only commands
+function isOwner(userId) {
+  return userId === OWNER_ID || userId === ROCA_ID;
+}
 
 // ===== CAMPAIGNS =====
 const CAMPAIGNS = [
@@ -87,7 +92,6 @@ async function getOrCreateSheet(campaignValue, campaignLabel) {
   const sheets = google.sheets({ version: 'v4', auth });
   const drive = google.drive({ version: 'v3', auth });
 
-  // Create spreadsheet
   const spreadsheet = await sheets.spreadsheets.create({
     requestBody: {
       properties: { title: `Editable Group — ${campaignLabel}` },
@@ -98,55 +102,26 @@ async function getOrCreateSheet(campaignValue, campaignLabel) {
   const sheetId = spreadsheet.data.spreadsheetId;
   const gid = spreadsheet.data.sheets[0].properties.sheetId;
 
-  // Apply formatting
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: sheetId,
     requestBody: {
       requests: [
-        // Merge A1:F1 for banner row
-        {
-          mergeCells: {
-            range: { sheetId: gid, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 6 },
-            mergeType: 'MERGE_ALL',
-          },
-        },
-        // Blue background + white bold text for banner
+        { mergeCells: { range: { sheetId: gid, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 6 }, mergeType: 'MERGE_ALL' } },
         {
           repeatCell: {
             range: { sheetId: gid, startRowIndex: 0, endRowIndex: 1 },
-            cell: {
-              userEnteredFormat: {
-                backgroundColor: { red: 0.204, green: 0.467, blue: 0.890 },
-                textFormat: { bold: true, fontSize: 20, foregroundColor: { red: 1, green: 1, blue: 1 } },
-                horizontalAlignment: 'CENTER',
-                verticalAlignment: 'MIDDLE',
-              },
-            },
+            cell: { userEnteredFormat: { backgroundColor: { red: 0.204, green: 0.467, blue: 0.890 }, textFormat: { bold: true, fontSize: 20, foregroundColor: { red: 1, green: 1, blue: 1 } }, horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE' } },
             fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)',
           },
         },
-        // Banner row height
-        {
-          updateDimensionProperties: {
-            range: { sheetId: gid, dimension: 'ROWS', startIndex: 0, endIndex: 1 },
-            properties: { pixelSize: 80 },
-            fields: 'pixelSize',
-          },
-        },
-        // Header row formatting (row 2)
+        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'ROWS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 80 }, fields: 'pixelSize' } },
         {
           repeatCell: {
             range: { sheetId: gid, startRowIndex: 1, endRowIndex: 2 },
-            cell: {
-              userEnteredFormat: {
-                textFormat: { bold: true },
-                backgroundColor: { red: 0.93, green: 0.93, blue: 0.93 },
-              },
-            },
+            cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.93, green: 0.93, blue: 0.93 } } },
             fields: 'userEnteredFormat(textFormat,backgroundColor)',
           },
         },
-        // Column widths
         { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 130 }, fields: 'pixelSize' } },
         { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 1, endIndex: 2 }, properties: { pixelSize: 100 }, fields: 'pixelSize' } },
         { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 2, endIndex: 3 }, properties: { pixelSize: 320 }, fields: 'pixelSize' } },
@@ -157,7 +132,6 @@ async function getOrCreateSheet(campaignValue, campaignLabel) {
     },
   });
 
-  // Write banner text + headers with live SUM formulas
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: sheetId,
     requestBody: {
@@ -179,22 +153,10 @@ async function getOrCreateSheet(campaignValue, campaignLabel) {
     },
   });
 
-  // Move to shared Drive folder
   const file = await drive.files.get({ fileId: sheetId, fields: 'parents' });
   const previousParents = (file.data.parents || []).join(',');
-  await drive.files.update({
-    fileId: sheetId,
-    addParents: DRIVE_FOLDER_ID,
-    removeParents: previousParents,
-    fields: 'id, parents',
-  });
-
-  // Share with official email
-  await drive.permissions.create({
-    fileId: sheetId,
-    requestBody: { role: 'writer', type: 'user', emailAddress: OFFICIAL_EMAIL },
-    sendNotificationEmail: false,
-  });
+  await drive.files.update({ fileId: sheetId, addParents: DRIVE_FOLDER_ID, removeParents: previousParents, fields: 'id, parents' });
+  await drive.permissions.create({ fileId: sheetId, requestBody: { role: 'writer', type: 'user', emailAddress: OFFICIAL_EMAIL }, sendNotificationEmail: false });
 
   await db.collection('campaigns').updateOne(
     { value: campaignValue },
@@ -206,52 +168,64 @@ async function getOrCreateSheet(campaignValue, campaignLabel) {
   return sheetId;
 }
 
-// Updates or appends a row in the campaign sheet — data starts at row 3
 async function updateSheetRow(submission) {
   try {
     const sheetId = await getOrCreateSheet(submission.campaignValue, submission.campaignLabel);
     const auth = getGoogleAuth();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId,
-      range: 'Submissions!A:F',
-    });
-
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'Submissions!A:F' });
     const rows = res.data.values || [];
     let rowIndex = -1;
-    // Start from index 2 to skip banner (row 1) and header (row 2)
     for (let i = 2; i < rows.length; i++) {
       if (rows[i][2] === submission.link) { rowIndex = i + 1; break; }
     }
 
     const today = new Date().toLocaleDateString('en-GB');
-    const rowData = [
-      submission.username || 'Unknown',
-      submission.dateSubmitted || today,
-      submission.link,
-      submission.views || 0,
-      submission.likes || 0,
-      today,
-    ];
+    const rowData = [submission.username || 'Unknown', submission.dateSubmitted || today, submission.link, submission.views || 0, submission.likes || 0, today];
 
     if (rowIndex > 0) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: sheetId,
-        range: `Submissions!A${rowIndex}:F${rowIndex}`,
-        valueInputOption: 'RAW',
-        requestBody: { values: [rowData] },
-      });
+      await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `Submissions!A${rowIndex}:F${rowIndex}`, valueInputOption: 'RAW', requestBody: { values: [rowData] } });
     } else {
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: sheetId,
-        range: 'Submissions!A3:F3',
-        valueInputOption: 'RAW',
-        requestBody: { values: [rowData] },
-      });
+      await sheets.spreadsheets.values.append({ spreadsheetId: sheetId, range: 'Submissions!A3:F3', valueInputOption: 'RAW', requestBody: { values: [rowData] } });
     }
   } catch (err) {
     console.error('Sheets update error:', err.message);
+  }
+}
+
+// Removes a row from the sheet by TikTok link
+async function removeSheetRow(campaignValue, campaignLabel, link) {
+  try {
+    const stored = await db.collection('campaigns').findOne({ value: campaignValue });
+    if (!stored || !stored.sheetId) return;
+
+    const auth = getGoogleAuth();
+    const sheets = google.sheets({ version: 'v4', auth });
+    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId: stored.sheetId });
+    const gid = spreadsheet.data.sheets[0].properties.sheetId;
+
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: stored.sheetId, range: 'Submissions!A:F' });
+    const rows = res.data.values || [];
+    let rowIndex = -1;
+    for (let i = 2; i < rows.length; i++) {
+      if (rows[i][2] === link) { rowIndex = i; break; } // 0-indexed for API
+    }
+
+    if (rowIndex < 0) return; // Row not found in sheet
+
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: stored.sheetId,
+      requestBody: {
+        requests: [{
+          deleteDimension: {
+            range: { sheetId: gid, dimension: 'ROWS', startIndex: rowIndex, endIndex: rowIndex + 1 },
+          },
+        }],
+      },
+    });
+  } catch (err) {
+    console.error('Sheets remove row error:', err.message);
   }
 }
 
@@ -346,7 +320,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('addsubmission')
-    .setDescription('Manually add a past submission (admin only)')
+    .setDescription('Manually add a past submission — owner only')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addUserOption(opt => opt.setName('user').setDescription('The editor').setRequired(true))
     .addStringOption(opt =>
@@ -355,16 +329,22 @@ const commands = [
     )
     .addStringOption(opt => opt.setName('link').setDescription('TikTok link').setRequired(true))
     .addStringOption(opt => opt.setName('name').setDescription('Edit name').setRequired(false))
-    .addStringOption(opt => opt.setName('date').setDescription('Date submitted (DD/MM/YYYY) — defaults to today').setRequired(false)),
+    .addStringOption(opt => opt.setName('date').setDescription('Date submitted (DD/MM/YYYY)').setRequired(false)),
+
+  new SlashCommandBuilder()
+    .setName('removesubmission')
+    .setDescription('Remove a submission by TikTok link — owner only')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption(opt => opt.setName('link').setDescription('TikTok link of the submission to remove').setRequired(true)),
 
   new SlashCommandBuilder()
     .setName('panel')
-    .setDescription('Send the support ticket panel')
+    .setDescription('Send the support ticket panel — owner only')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
     .setName('submitpanel')
-    .setDescription('Send the submission panel')
+    .setDescription('Send the submission panel — owner only')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
@@ -373,7 +353,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('updatestats')
-    .setDescription('Manually trigger a TikTok stats update')
+    .setDescription('Manually trigger a TikTok stats update — owner only')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ];
 
@@ -417,7 +397,6 @@ async function buildMySubmissionsEmbed(userId) {
 
     if (isApproved && campaign) {
       const campaignEnded = new Date() > campaign.endDate;
-
       let earningsDisplay;
       if (campaignEnded || earnings === null) {
         earningsDisplay = `${fmtUSD(sub.earnings || 0)} earned (final)`;
@@ -429,14 +408,12 @@ async function buildMySubmissionsEmbed(userId) {
 
       description += `🟢 **${sub.clipName}**: ${fmtViews(views)} views | ${earningsDisplay}\n`;
 
-      // Check rank for bonus info
       if (views > 0) {
         const allApproved = await db.collection('submissions')
           .find({ campaignValue: sub.campaignValue, status: 'Approved ✅' })
           .sort({ views: -1 })
           .toArray();
         const rank = allApproved.findIndex(s => s._id.toString() === sub._id.toString()) + 1;
-
         if (rank === 1) {
           description += `🥇 1st place — +${fmtUSD(campaign.bonus1st)} bonus | Total: ${fmtUSD((earnings || 0) + campaign.bonus1st)}\n`;
         } else if (rank === 2) {
@@ -538,6 +515,9 @@ client.on('interactionCreate', async interaction => {
 
   // ── /addsubmission ────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'addsubmission') {
+    if (!isOwner(interaction.user.id))
+      return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
+
     await interaction.deferReply({ ephemeral: true });
     try {
       const user = interaction.options.getUser('user');
@@ -550,7 +530,6 @@ client.on('interactionCreate', async interaction => {
       if (!link.includes('tiktok.com'))
         return interaction.editReply({ content: '❌ Please provide a valid TikTok link.' });
 
-      // Per-campaign counter
       const counterDoc = await db.collection('counters').findOneAndUpdate(
         { campaignValue },
         { $inc: { count: 1 } },
@@ -574,21 +553,10 @@ client.on('interactionCreate', async interaction => {
         submittedAt: new Date(),
       });
 
-      // Add to Google Sheet
-      await updateSheetRow({
-        userId: user.id,
-        username: user.username,
-        campaignValue,
-        campaignLabel: campaign.label,
-        clipName,
-        link,
-        views: 0,
-        likes: 0,
-        dateSubmitted: dateStr,
-      });
+      await updateSheetRow({ userId: user.id, username: user.username, campaignValue, campaignLabel: campaign.label, clipName, link, views: 0, likes: 0, dateSubmitted: dateStr });
 
       return interaction.editReply({
-        content: `✅ Added submission for <@${user.id}> to **${campaign.label}** — Post #${campaignNumber}\n🔗 ${link}\nStats will update on the next cycle (or use \`/updatestats\` now).`,
+        content: `✅ Added **${clipName}** for <@${user.id}> to **${campaign.label}** — Post #${campaignNumber}\nRun \`/updatestats\` to fetch views now.`,
       });
     } catch (err) {
       console.error('addsubmission error:', err);
@@ -596,8 +564,37 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /removesubmission ─────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'removesubmission') {
+    if (!isOwner(interaction.user.id))
+      return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
+
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const link = interaction.options.getString('link').trim();
+
+      const sub = await db.collection('submissions').findOne({ link });
+      if (!sub)
+        return interaction.editReply({ content: '❌ No submission found with that link.' });
+
+      await db.collection('submissions').deleteOne({ link });
+
+      // Also remove from Google Sheet
+      await removeSheetRow(sub.campaignValue, sub.campaignLabel, link);
+
+      return interaction.editReply({
+        content: `✅ Removed submission by <@${sub.userId}> from **${sub.campaignLabel}**\n🔗 ${link}`,
+      });
+    } catch (err) {
+      console.error('removesubmission error:', err);
+      return interaction.editReply({ content: '❌ Something went wrong.' });
+    }
+  }
+
   // ── /panel ────────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'panel') {
+    if (!isOwner(interaction.user.id))
+      return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
     try {
       const embed = new EmbedBuilder()
         .setColor(0x2b2d31)
@@ -620,6 +617,8 @@ client.on('interactionCreate', async interaction => {
 
   // ── /submitpanel ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'submitpanel') {
+    if (!isOwner(interaction.user.id))
+      return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
     try {
       const embed = new EmbedBuilder()
         .setColor(0x2b2d31)
@@ -653,6 +652,8 @@ client.on('interactionCreate', async interaction => {
 
   // ── /updatestats ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'updatestats') {
+    if (!isOwner(interaction.user.id))
+      return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
     await interaction.deferReply({ ephemeral: true });
     await updateAllStats();
     return interaction.editReply({ content: '✅ Stats updated.' });
@@ -675,7 +676,6 @@ client.on('interactionCreate', async interaction => {
   // ── BUTTONS ───────────────────────────────────────────────────────────────
   if (interaction.isButton()) {
 
-    // Open Ticket
     if (interaction.customId === 'open_ticket') {
       await interaction.deferReply({ ephemeral: true });
       try {
@@ -705,7 +705,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Submit Edit
     if (interaction.customId === 'submit_clip') {
       try {
         const active = CAMPAIGNS.filter(c => new Date() < c.endDate);
@@ -729,7 +728,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // My Submissions button
     if (interaction.customId === 'view_submissions') {
       await interaction.deferReply({ ephemeral: true });
       try {
@@ -742,7 +740,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Leaderboard button
     if (interaction.customId === 'leaderboard_button') {
       try {
         const select = new StringSelectMenuBuilder()
@@ -762,7 +759,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Campaign Status button
     if (interaction.customId === 'campaign_status') {
       await interaction.deferReply({ ephemeral: true });
       try {
@@ -773,7 +769,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Approve / Reject
     if (interaction.customId.startsWith('approve_') || interaction.customId.startsWith('reject_')) {
       await interaction.deferUpdate();
       try {
@@ -788,20 +783,12 @@ client.on('interactionCreate', async interaction => {
         await interaction.message.edit({
           content:
             `📩 ${sub.campaignLabel} — Post #${sub.campaignNumber}\n` +
-            `👤 <@${sub.userId}>\n` +
-            `🎬 ${sub.clipName}\n` +
-            `🔗 <${sub.link}>\n` +
-            `📊 Status: ${newStatus}`,
+            `👤 <@${sub.userId}>\n🎬 ${sub.clipName}\n🔗 <${sub.link}>\n📊 Status: ${newStatus}`,
           components: [],
         });
 
         if (isApproved) {
-          await updateSheetRow({
-            ...sub,
-            views: 0,
-            likes: 0,
-            dateSubmitted: new Date().toLocaleDateString('en-GB'),
-          });
+          await updateSheetRow({ ...sub, views: 0, likes: 0, dateSubmitted: new Date().toLocaleDateString('en-GB') });
         }
 
         try {
@@ -810,7 +797,7 @@ client.on('interactionCreate', async interaction => {
             .setColor(isApproved ? 0x57f287 : 0xed4245)
             .setTitle(isApproved ? '✅ Submission Approved!' : '❌ Submission Rejected')
             .setDescription(isApproved
-              ? 'Your submission has been **approved**! Views and earnings update every 12 hours. Use the **My Submissions** button to track your progress and see your current ranking.'
+              ? 'Your submission has been **approved**! Views and earnings update every 12 hours. Use the **My Submissions** button to track your progress and ranking.'
               : 'Your submission has been **rejected**. Feel free to open a ticket if you have questions.')
             .addFields(
               { name: '🎯 Campaign', value: sub.campaignLabel, inline: true },
@@ -829,7 +816,6 @@ client.on('interactionCreate', async interaction => {
   // ── SELECT MENUS ──────────────────────────────────────────────────────────
   if (interaction.isStringSelectMenu()) {
 
-    // Campaign select → open modal
     if (interaction.customId === 'campaign_select') {
       try {
         const selected = CAMPAIGNS.find(c => c.value === interaction.values[0]);
@@ -852,7 +838,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Leaderboard campaign select
     if (interaction.customId === 'leaderboard_campaign_select') {
       await interaction.deferUpdate();
       try {
@@ -876,7 +861,6 @@ client.on('interactionCreate', async interaction => {
 
       if (!campaignInfo)
         return interaction.editReply({ content: '❌ Session expired — please try submitting again.' });
-
       if (!clipLink.includes('tiktok.com'))
         return interaction.editReply({ content: '❌ Please provide a valid TikTok link.' });
 
@@ -909,10 +893,7 @@ client.on('interactionCreate', async interaction => {
       await submissionsChannel.send({
         content:
           `📩 ${campaignInfo.label} — Post #${campaignNumber}\n` +
-          `👤 <@${interaction.user.id}>\n` +
-          `🎬 ${clipName}\n` +
-          `🔗 <${clipLink}>\n` +
-          `📊 Status: Pending`,
+          `👤 <@${interaction.user.id}>\n🎬 ${clipName}\n🔗 <${clipLink}>\n📊 Status: Pending`,
         components: [new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId(`approve_${subId}`).setLabel('Approve').setStyle(ButtonStyle.Success),
           new ButtonBuilder().setCustomId(`reject_${subId}`).setLabel('Reject').setStyle(ButtonStyle.Danger)
