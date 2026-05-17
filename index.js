@@ -64,11 +64,7 @@ const CAMPAIGNS = [
 let db;
 
 async function connectDB() {
-  const mongoClient = new MongoClient(process.env.MONGODB_URI, {
-    tls: true,
-    tlsAllowInvalidCertificates: true,
-    serverSelectionTimeoutMS: 10000,
-  });
+  const mongoClient = new MongoClient(process.env.MONGODB_URI);
   await mongoClient.connect();
   db = mongoClient.db('editablegroup');
   console.log('Connected to MongoDB');
