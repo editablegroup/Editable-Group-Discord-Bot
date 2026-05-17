@@ -278,7 +278,7 @@ async function updateAllStats() {
       const campaign = CAMPAIGNS.find(c => c.value === sub.campaignValue);
       if (!campaign) continue;
       if (new Date() > campaign.endDate && sub.views > 0) continue;
-      const videoId = extractVideoId(sub.link);
+      const videoId = await extractVideoId(sub.link);
       if (!videoId) continue;
       const stats = await fetchTikTokStats(videoId);
       if (!stats) continue;
