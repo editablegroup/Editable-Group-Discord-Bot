@@ -269,18 +269,25 @@ function calculateEarnings(views, campaign) {
   return Math.min((views / 1000) * campaign.rpm, campaign.maxPayout);
 }
 
-async function updateAllStats() {
+aasync function updateAllStats() {
   console.log('[Stats] Starting update...');
   try {
+    const all = await db.collection('submissions').find({}).toArray();
+    console.log(`[Stats] Total submissions in DB: ${all.length}`);
+    console.log(`[Stats] Statuses: ${all.map(s => s.status).join(', ')}`);
+
     const approved = await db.collection('submissions').find({ status: 'Approved ✅' }).toArray();
+    console.log(`[Stats] Approved count: ${approved.length}`);
     let updated = 0;
     for (const sub of approved) {
       const campaign = CAMPAIGNS.find(c => c.value === sub.campaignValue);
-      if (!campaign) continue;
-      if (new Date() > campaign.endDate && sub.views > 0) continue;
+      if (!campaign) { console.log(`[Stats] No campaign found for ${sub.campaignValue}`); continue; }
+      if (new Date() > campaign.endDate && sub.views > 0) { console.log(`[Stats] Campaign ended, skipping ${sub.link}`); continue; }
       const videoId = await extractVideoId(sub.link);
+      console.log(`[Stats] ${sub.link} → videoId: ${videoId}`);
       if (!videoId) continue;
       const stats = await fetchTikTokStats(videoId);
+      console.log(`[Stats] Stats for ${videoId}:`, stats);
       if (!stats) continue;
       const earnings = calculateEarnings(stats.views, campaign);
       await db.collection('submissions').updateOne(
