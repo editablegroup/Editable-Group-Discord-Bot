@@ -230,9 +230,21 @@ async function removeSheetRow(campaignValue, campaignLabel, link) {
 }
 
 // ===== TIKTOK STATS =====
-function extractVideoId(url) {
-  const match = url.match(/video\/(\d+)/);
-  return match ? match[1] : null;
+async function extractVideoId(url) {
+  // Try direct extraction first (works for full URLs)
+  const direct = url.match(/video\/(\d+)/);
+  if (direct) return direct[1];
+
+  // Follow redirects for short URLs (vm.tiktok.com, vt.tiktok.com, tiktok.com/t/)
+  try {
+    const res = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+    const finalUrl = res.url;
+    const match = finalUrl.match(/video\/(\d+)/);
+    return match ? match[1] : null;
+  } catch (err) {
+    console.error('Short URL resolve error:', err.message);
+    return null;
+  }
 }
 
 async function fetchTikTokStats(videoId) {
