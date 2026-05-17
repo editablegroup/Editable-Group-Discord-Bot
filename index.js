@@ -28,6 +28,7 @@ const OWNER_ID = '960171711674847282';
 const ROCA_ID = '996919845373366362';
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const RAPIDAPI_HOST = 'tiktok-api23.p.rapidapi.com';
+const TWELVE_HOURS = 12 * 60 * 60 * 1000;
 
 function isOwner(userId) {
   return userId === OWNER_ID || userId === ROCA_ID;
@@ -93,16 +94,16 @@ function getGoogleAuth() {
   });
 }
 
-// Extracts video ID from any TikTok URL using regex only (no HTTP)
 function extractVideoIdFromUrl(url) {
   if (!url) return null;
   const match = url.match(/video\/(\d+)/);
   return match ? match[1] : null;
 }
 
-// Updates the existing campaign sheet.
-// Matches by video ID — works for both short and full URLs.
-// Writes: A = username, B = date (if empty), D = views, E = likes, F = last updated.
+// Updates one row in the existing campaign sheet.
+// Matches by videoId (works for both short and full URLs).
+// Only writes: A (username, if empty), B (date, if empty), D (views), E (likes).
+// Column F (Last Updated) is written once per campaign in the header — not per row.
 async function updateSheetRow(submission) {
   try {
     const campaign = CAMPAIGNS.find(c => c.value === submission.campaignValue);
@@ -113,7 +114,7 @@ async function updateSheetRow(submission) {
 
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: campaign.sheetId,
-      range: 'A:F',
+      range: 'A:E',
     });
 
     const rows = res.data.values || [];
@@ -125,37 +126,35 @@ async function updateSheetRow(submission) {
       if (!cellLink) continue;
       if (cellLink === submission.link.trim()) { rowIndex = i + 1; break; }
       if (subVideoId) {
-        const cellVideoId = extractVideoIdFromUrl(cellLink);
-        if (cellVideoId === subVideoId) { rowIndex = i + 1; break; }
         if (cellLink.includes(subVideoId)) { rowIndex = i + 1; break; }
+        const cellVideoId = extractVideoIdFromUrl(cellLink);
+        if (cellVideoId && cellVideoId === subVideoId) { rowIndex = i + 1; break; }
       }
     }
 
-    const today = todayStr();
     const updates = [];
 
     if (rowIndex > 0) {
+      // Row exists — update A (username) and B (date) only if currently empty
       const existingUsername = (rows[rowIndex - 1]?.[0] || '').trim();
       const existingDate = (rows[rowIndex - 1]?.[1] || '').trim();
-
       if (submission.username && !existingUsername)
         updates.push({ range: `A${rowIndex}`, values: [[submission.username]] });
       if (submission.dateSubmitted && !existingDate)
         updates.push({ range: `B${rowIndex}`, values: [[submission.dateSubmitted]] });
-
-      updates.push({ range: `D${rowIndex}:F${rowIndex}`, values: [[submission.views || 0, submission.likes || 0, today]] });
+      // Always update views (D) and likes (E)
+      updates.push({ range: `D${rowIndex}:E${rowIndex}`, values: [[submission.views || 0, submission.likes || 0]] });
     } else {
-      // No match — append new row
+      // No matching row — append a new one (A, B, C, D, E only — no F)
       const nextRow = rows.length + 1;
       updates.push({
-        range: `A${nextRow}:F${nextRow}`,
+        range: `A${nextRow}:E${nextRow}`,
         values: [[
           submission.username || '',
-          submission.dateSubmitted || today,
+          submission.dateSubmitted || todayStr(),
           submission.link,
           submission.views || 0,
           submission.likes || 0,
-          today,
         ]],
       });
     }
@@ -171,14 +170,31 @@ async function updateSheetRow(submission) {
   }
 }
 
+// Writes "Last Updated: DD/MM/YYYY" once into the F2 header cell of a campaign sheet
+async function updateSheetTimestamp(campaignValue) {
+  try {
+    const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
+    if (!campaign || !campaign.sheetId) return;
+    const auth = getGoogleAuth();
+    const sheets = google.sheets({ version: 'v4', auth });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: campaign.sheetId,
+      range: 'F2',
+      valueInputOption: 'RAW',
+      requestBody: { values: [[`🕐 Last Updated: ${todayStr()}`]] },
+    });
+  } catch (err) {
+    console.error('Sheet timestamp update error:', err.message);
+  }
+}
+
 // ===== TIKTOK STATS =====
 async function extractVideoId(url) {
   const direct = url.match(/video\/(\d+)/);
   if (direct) return direct[1];
   try {
     const res = await fetch(url, { method: 'HEAD', redirect: 'follow' });
-    const finalUrl = res.url;
-    const match = finalUrl.match(/video\/(\d+)/);
+    const match = res.url.match(/video\/(\d+)/);
     return match ? match[1] : null;
   } catch (err) {
     console.error('Short URL resolve error:', err.message);
@@ -210,11 +226,39 @@ function calculateEarnings(views, campaign) {
   return Math.min((views / 1000) * campaign.rpm, campaign.maxPayout);
 }
 
-async function updateAllStats() {
+// Returns true if 12h have passed since last stats run (or if never run)
+async function canRunStats() {
+  try {
+    const record = await db.collection('metadata').findOne({ key: 'lastStatsRun' });
+    if (!record) return true;
+    const elapsed = Date.now() - new Date(record.value).getTime();
+    return elapsed >= TWELVE_HOURS;
+  } catch { return true; }
+}
+
+async function markStatsRun() {
+  await db.collection('metadata').updateOne(
+    { key: 'lastStatsRun' },
+    { $set: { value: new Date() } },
+    { upsert: true }
+  );
+}
+
+// force=true bypasses the 12h throttle (used by /updatestats command)
+async function updateAllStats(force = false) {
+  if (!force && !(await canRunStats())) {
+    console.log('[Stats] Skipping — ran less than 12h ago');
+    return;
+  }
+
   console.log('[Stats] Starting update...');
+  await markStatsRun();
+
   try {
     const approved = await db.collection('submissions').find({ status: 'Approved ✅' }).toArray();
     let updated = 0;
+    const updatedCampaigns = new Set();
+
     for (const sub of approved) {
       const campaign = CAMPAIGNS.find(c => c.value === sub.campaignValue);
       if (!campaign) continue;
@@ -241,8 +285,15 @@ async function updateAllStats() {
         dateSubmitted: sub.submittedAt ? dateStr(sub.submittedAt) : todayStr(),
       });
 
+      updatedCampaigns.add(sub.campaignValue);
       updated++;
     }
+
+    // Write "Last Updated" once per campaign in the F2 header cell
+    for (const campaignValue of updatedCampaigns) {
+      await updateSheetTimestamp(campaignValue);
+    }
+
     console.log(`[Stats] Updated ${updated}/${approved.length} submissions`);
   } catch (err) {
     console.error('[Stats] Error:', err.message);
@@ -336,8 +387,10 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 // ===== READY =====
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
-  setInterval(updateAllStats, 12 * 60 * 60 * 1000);
-  setTimeout(updateAllStats, 15000);
+  // Throttled startup run — skips if ran less than 12h ago
+  setTimeout(() => updateAllStats(false), 15000);
+  // Scheduled every 12h — also throttled
+  setInterval(() => updateAllStats(false), TWELVE_HOURS);
 });
 
 // ===== BUILD: MY SUBMISSIONS EMBED =====
@@ -389,16 +442,14 @@ async function buildMySubmissionsEmbed(userId) {
         }
         const sorted = Object.entries(userTotals).sort((a, b) => b[1] - a[1]);
         const rank = sorted.findIndex(([uid]) => uid === sub.userId) + 1;
-
         const totalEarnings = allApproved
           .filter(s => s.userId === sub.userId)
           .reduce((sum, s) => sum + (s.earnings || 0), 0);
 
-        if (rank === 1) {
+        if (rank === 1)
           description += `🥇 1st place — +${fmtUSD(campaign.bonus1st)} bonus | Total: ${fmtUSD(totalEarnings + campaign.bonus1st)}\n`;
-        } else if (rank === 2) {
+        else if (rank === 2)
           description += `🥈 2nd place — +${fmtUSD(campaign.bonus2nd)} bonus | Total: ${fmtUSD(totalEarnings + campaign.bonus2nd)}\n`;
-        }
       }
 
       const ago = timeAgo(sub.lastUpdated);
@@ -456,7 +507,7 @@ async function buildLeaderboardText(campaignValue) {
   return text;
 }
 
-// ===== BUILD: EARNINGS (owner only) =====
+// ===== BUILD: EARNINGS =====
 async function buildEarningsText(campaignValue) {
   const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
   if (!campaign) return '❌ Campaign not found.';
@@ -468,7 +519,6 @@ async function buildEarningsText(campaignValue) {
   const isActive = new Date() < campaign.endDate;
   const endTs = Math.floor(campaign.endDate.getTime() / 1000);
 
-  // Combine per user
   const userMap = {};
   for (const sub of approved) {
     if (!userMap[sub.userId]) userMap[sub.userId] = { views: 0, earnings: 0 };
@@ -484,7 +534,7 @@ async function buildEarningsText(campaignValue) {
   let text = `💰 **${campaign.label} — Earnings Breakdown**\n`;
   text += isActive ? `🟢 Active — ends <t:${endTs}:R>\n` : `🔴 Campaign ended\n`;
   text += `📊 Budget: ${fmtUSD(campaign.budget)} | Spent: ${fmtUSD(totalRpm)} | Remaining: ${fmtUSD(budgetRemaining)}\n`;
-  text += `🎁 Bonuses (separate): 🥇 ${fmtUSD(campaign.bonus1st)} · 🥈 ${fmtUSD(campaign.bonus2nd)}\n\n`;
+  text += `🎁 Bonuses (on top of budget): 🥇 ${fmtUSD(campaign.bonus1st)} · 🥈 ${fmtUSD(campaign.bonus2nd)}\n\n`;
 
   if (sorted.length === 0) { text += '*No approved submissions yet.*'; return text; }
 
@@ -493,22 +543,12 @@ async function buildEarningsText(campaignValue) {
     const [userId, data] = sorted[i];
     const medal = medals[i] || `${i + 1}.`;
     const rpm = data.earnings;
-    let bonusStr = '';
-    let totalStr = fmtUSD(rpm);
-
-    if (i === 0) {
-      bonusStr = ` + ${fmtUSD(campaign.bonus1st)} bonus`;
-      totalStr = fmtUSD(rpm + campaign.bonus1st);
-    } else if (i === 1) {
-      bonusStr = ` + ${fmtUSD(campaign.bonus2nd)} bonus`;
-      totalStr = fmtUSD(rpm + campaign.bonus2nd);
-    }
-
-    text += `${medal} <@${userId}> — ${fmtViews(data.views)} views\n`;
-    text += `   💵 ${fmtUSD(rpm)} (RPM)${bonusStr} = **${totalStr}**\n`;
+    let line = `${medal} <@${userId}> — ${fmtViews(data.views)} views | ${fmtUSD(rpm)}`;
+    if (i === 0) line += ` + ${fmtUSD(campaign.bonus1st)} bonus = **${fmtUSD(rpm + campaign.bonus1st)}**`;
+    else if (i === 1) line += ` + ${fmtUSD(campaign.bonus2nd)} bonus = **${fmtUSD(rpm + campaign.bonus2nd)}**`;
+    text += line + '\n';
   }
-
-  text += `\n*Earnings are based on current view counts and update every 12 hours.*`;
+  text += `\n*Updates every 12 hours.*`;
   return text;
 }
 
@@ -531,7 +571,6 @@ function buildCampaignStatusText() {
 // ===== INTERACTIONS =====
 client.on('interactionCreate', async interaction => {
 
-  // ── /mysubmissions ────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'mysubmissions') {
     await interaction.deferReply({ ephemeral: true });
     try {
@@ -544,7 +583,6 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── /leaderboard ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'leaderboard') {
     await interaction.deferReply({ ephemeral: false });
     try {
@@ -555,7 +593,6 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── /earnings ─────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'earnings') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -568,7 +605,6 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── /addsubmission ────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'addsubmission') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -589,7 +625,6 @@ client.on('interactionCreate', async interaction => {
         { $inc: { count: 1 } },
         { upsert: true, returnDocument: 'after' }
       );
-      const campaignNumber = counterDoc.count;
 
       await db.collection('submissions').insertOne({
         userId: user.id,
@@ -599,7 +634,7 @@ client.on('interactionCreate', async interaction => {
         clipName,
         link,
         status: 'Approved ✅',
-        campaignNumber,
+        campaignNumber: counterDoc.count,
         views: 0,
         likes: 0,
         earnings: 0,
@@ -617,7 +652,7 @@ client.on('interactionCreate', async interaction => {
       });
 
       return interaction.editReply({
-        content: `✅ Added **${clipName}** for <@${user.id}> to **${campaign.label}** — Post #${campaignNumber}\nRun \`/updatestats\` to fetch views now.`,
+        content: `✅ Added **${clipName}** for <@${user.id}> to **${campaign.label}** — Post #${counterDoc.count}\nRun \`/updatestats\` to fetch views now.`,
       });
     } catch (err) {
       console.error('addsubmission error:', err);
@@ -625,7 +660,6 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── /removesubmission ─────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'removesubmission') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -634,10 +668,9 @@ client.on('interactionCreate', async interaction => {
       const link = interaction.options.getString('link').trim();
       const sub = await db.collection('submissions').findOne({ link });
       if (!sub) return interaction.editReply({ content: '❌ No submission found with that link.' });
-
       await db.collection('submissions').deleteOne({ link });
       return interaction.editReply({
-        content: `✅ Removed submission by <@${sub.userId}> from **${sub.campaignLabel}**\n🔗 ${link}\n\n*Note: please delete the row from the Google Sheet manually.*`,
+        content: `✅ Removed submission by <@${sub.userId}> from **${sub.campaignLabel}**\n🔗 ${link}\n\n⚠️ Please delete the row from the Google Sheet manually.`,
       });
     } catch (err) {
       console.error('removesubmission error:', err);
@@ -645,7 +678,6 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── /panel ────────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'panel') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -654,7 +686,6 @@ client.on('interactionCreate', async interaction => {
         .setColor(0x2b2d31)
         .setTitle('🎟️ Support Center')
         .setDescription('Use the button below to open a ticket.\n\n• Submissions\n• Payments\n• Issues');
-
       await interaction.channel.send({
         embeds: [embed],
         components: [new ActionRowBuilder().addComponents(
@@ -669,7 +700,6 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── /submitpanel ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'submitpanel') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -686,7 +716,6 @@ client.on('interactionCreate', async interaction => {
           { name: '📈 Campaign Status', value: 'View active campaigns, budgets and deadlines.', inline: true },
           { name: '\u200b', value: '\u200b', inline: true },
         );
-
       await interaction.channel.send({
         embeds: [embed],
         components: [new ActionRowBuilder().addComponents(
@@ -704,16 +733,14 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── /updatestats ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'updatestats') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
     await interaction.deferReply({ ephemeral: true });
-    await updateAllStats();
+    await updateAllStats(true); // force = true bypasses 12h throttle
     return interaction.editReply({ content: '✅ Stats updated.' });
   }
 
-  // ── /close ────────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'close') {
     try {
       if (!interaction.channel.name.startsWith('ticket-'))
@@ -727,7 +754,6 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── BUTTONS ───────────────────────────────────────────────────────────────
   if (interaction.isButton()) {
 
     if (interaction.customId === 'open_ticket') {
@@ -735,7 +761,6 @@ client.on('interactionCreate', async interaction => {
       try {
         const existing = interaction.guild.channels.cache.find(c => c.name === `ticket-${interaction.user.username}`);
         if (existing) return interaction.editReply({ content: `❌ You already have a ticket: <#${existing.id}>` });
-
         const ownerMember = await interaction.guild.members.fetch(OWNER_ID).catch(() => null);
         const rocaMember = await interaction.guild.members.fetch(ROCA_ID).catch(() => null);
         const permissionOverwrites = [
@@ -745,7 +770,6 @@ client.on('interactionCreate', async interaction => {
         ];
         if (ownerMember) permissionOverwrites.push({ id: ownerMember.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] });
         if (rocaMember) permissionOverwrites.push({ id: rocaMember.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] });
-
         const channel = await interaction.guild.channels.create({
           name: `ticket-${interaction.user.username}`,
           type: ChannelType.GuildText,
@@ -764,12 +788,10 @@ client.on('interactionCreate', async interaction => {
         const active = CAMPAIGNS.filter(c => new Date() < c.endDate);
         if (active.length === 0)
           return interaction.reply({ content: '❌ There are no active campaigns right now.', ephemeral: true });
-
         const select = new StringSelectMenuBuilder()
           .setCustomId('campaign_select')
           .setPlaceholder('Select a campaign')
           .addOptions(active.map(c => new StringSelectMenuOptionBuilder().setLabel(c.label).setValue(c.value)));
-
         await interaction.reply({
           embeds: [new EmbedBuilder().setColor(0x2b2d31).setTitle('🎯 Select a Campaign').setDescription('Choose the campaign you want to submit your edit to.')],
           components: [new ActionRowBuilder().addComponents(select)],
@@ -800,7 +822,6 @@ client.on('interactionCreate', async interaction => {
           .setCustomId('leaderboard_campaign_select')
           .setPlaceholder('Select a campaign')
           .addOptions(CAMPAIGNS.map(c => new StringSelectMenuOptionBuilder().setLabel(c.label).setValue(c.value)));
-
         await interaction.reply({
           content: '🏆 Which campaign leaderboard would you like to see?',
           components: [new ActionRowBuilder().addComponents(select)],
@@ -830,17 +851,14 @@ client.on('interactionCreate', async interaction => {
         const subId = interaction.customId.replace(/^(approve|reject)_/, '');
         const sub = await db.collection('submissions').findOne({ _id: new ObjectId(subId) });
         if (!sub) return;
-
         const newStatus = isApproved ? 'Approved ✅' : 'Rejected ❌';
         await db.collection('submissions').updateOne({ _id: sub._id }, { $set: { status: newStatus } });
-
         await interaction.message.edit({
           content:
             `📩 ${sub.campaignLabel} — Post #${sub.campaignNumber}\n` +
             `👤 <@${sub.userId}>\n🎬 ${sub.clipName}\n🔗 <${sub.link}>\n📊 Status: ${newStatus}`,
           components: [],
         });
-
         if (isApproved) {
           await updateSheetRow({
             campaignValue: sub.campaignValue,
@@ -851,7 +869,6 @@ client.on('interactionCreate', async interaction => {
             likes: 0,
           });
         }
-
         try {
           const user = await client.users.fetch(sub.userId);
           const embed = new EmbedBuilder()
@@ -874,14 +891,12 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── SELECT MENUS ──────────────────────────────────────────────────────────
   if (interaction.isStringSelectMenu()) {
 
     if (interaction.customId === 'campaign_select') {
       try {
         const selected = CAMPAIGNS.find(c => c.value === interaction.values[0]);
         pendingCampaign[interaction.user.id] = { value: selected.value, label: selected.label };
-
         const modal = new ModalBuilder().setCustomId('submit_modal').setTitle('Submit an Edit');
         modal.addComponents(
           new ActionRowBuilder().addComponents(
@@ -911,7 +926,6 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── MODAL SUBMIT ──────────────────────────────────────────────────────────
   if (interaction.isModalSubmit() && interaction.customId === 'submit_modal') {
     await interaction.deferReply({ ephemeral: true });
     try {
@@ -930,7 +944,6 @@ client.on('interactionCreate', async interaction => {
         { $inc: { count: 1 } },
         { upsert: true, returnDocument: 'after' }
       );
-      const campaignNumber = counterDoc.count;
 
       const result = await db.collection('submissions').insertOne({
         userId: interaction.user.id,
@@ -940,7 +953,7 @@ client.on('interactionCreate', async interaction => {
         clipName,
         link: clipLink,
         status: 'Pending',
-        campaignNumber,
+        campaignNumber: counterDoc.count,
         views: 0,
         likes: 0,
         earnings: 0,
@@ -950,10 +963,9 @@ client.on('interactionCreate', async interaction => {
 
       const subId = result.insertedId.toString();
       const submissionsChannel = await client.channels.fetch(SUBMISSIONS_CHANNEL_ID);
-
       await submissionsChannel.send({
         content:
-          `📩 ${campaignInfo.label} — Post #${campaignNumber}\n` +
+          `📩 ${campaignInfo.label} — Post #${counterDoc.count}\n` +
           `👤 <@${interaction.user.id}>\n🎬 ${clipName}\n🔗 <${clipLink}>\n📊 Status: Pending`,
         components: [new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId(`approve_${subId}`).setLabel('Approve').setStyle(ButtonStyle.Success),
