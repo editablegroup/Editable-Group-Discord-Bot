@@ -269,7 +269,7 @@ function calculateEarnings(views, campaign) {
   return Math.min((views / 1000) * campaign.rpm, campaign.maxPayout);
 }
 
-aasync function updateAllStats() {
+async function updateAllStats() {
   console.log('[Stats] Starting update...');
   try {
     const all = await db.collection('submissions').find({}).toArray();
