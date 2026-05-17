@@ -28,14 +28,22 @@ const OWNER_ID = '960171711674847282';
 const ROCA_ID = '996919845373366362';
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const RAPIDAPI_HOST = 'tiktok-api23.p.rapidapi.com';
-const OFFICIAL_EMAIL = 'official@editablegroup.co.uk';
 
 function isOwner(userId) {
   return userId === OWNER_ID || userId === ROCA_ID;
 }
 
+function todayStr() {
+  const now = new Date();
+  return `${String(now.getDate()).padStart(2,'0')}/${String(now.getMonth()+1).padStart(2,'0')}/${now.getFullYear()}`;
+}
+
+function dateStr(d) {
+  const dt = new Date(d);
+  return `${String(dt.getDate()).padStart(2,'0')}/${String(dt.getMonth()+1).padStart(2,'0')}/${dt.getFullYear()}`;
+}
+
 // ===== CAMPAIGNS =====
-// sheetId = the ID from the Google Sheet URL for that campaign's existing sheet
 const CAMPAIGNS = [
   {
     label: 'Alter Ego - Doechii Ft. JT',
@@ -85,9 +93,16 @@ function getGoogleAuth() {
   });
 }
 
-// Updates views, likes and last updated in the existing campaign sheet.
-// Matches by TikTok link in column C. If not found, appends a new row with just the link.
-// Only touches columns C (link if new), D (views), E (likes), F (last updated).
+// Extracts video ID from any TikTok URL using regex only (no HTTP)
+function extractVideoIdFromUrl(url) {
+  if (!url) return null;
+  const match = url.match(/video\/(\d+)/);
+  return match ? match[1] : null;
+}
+
+// Updates the existing campaign sheet.
+// Matches by video ID — works for both short and full URLs.
+// Writes: A = username, B = date (if empty), D = views, E = likes, F = last updated.
 async function updateSheetRow(submission) {
   try {
     const campaign = CAMPAIGNS.find(c => c.value === submission.campaignValue);
@@ -96,80 +111,63 @@ async function updateSheetRow(submission) {
     const auth = getGoogleAuth();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    // Read column C to find the row with matching link
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: campaign.sheetId,
-      range: 'C:C',
+      range: 'A:F',
     });
 
     const rows = res.data.values || [];
+    const subVideoId = submission.videoId || extractVideoIdFromUrl(submission.link);
+
     let rowIndex = -1;
-    for (let i = 1; i < rows.length; i++) { // start at 1 to skip header
-      if (rows[i][0] === submission.link) { rowIndex = i + 1; break; } // 1-indexed
+    for (let i = 1; i < rows.length; i++) {
+      const cellLink = (rows[i][2] || '').trim();
+      if (!cellLink) continue;
+      if (cellLink === submission.link.trim()) { rowIndex = i + 1; break; }
+      if (subVideoId) {
+        const cellVideoId = extractVideoIdFromUrl(cellLink);
+        if (cellVideoId === subVideoId) { rowIndex = i + 1; break; }
+        if (cellLink.includes(subVideoId)) { rowIndex = i + 1; break; }
+      }
     }
 
-    const today = new Date().toLocaleDateString('en-GB');
+    const today = todayStr();
+    const updates = [];
 
     if (rowIndex > 0) {
-      // Row exists — update D, E, F only
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: campaign.sheetId,
-        range: `D${rowIndex}:F${rowIndex}`,
-        valueInputOption: 'RAW',
-        requestBody: { values: [[submission.views || 0, submission.likes || 0, today]] },
-      });
+      const existingUsername = (rows[rowIndex - 1]?.[0] || '').trim();
+      const existingDate = (rows[rowIndex - 1]?.[1] || '').trim();
+
+      if (submission.username && !existingUsername)
+        updates.push({ range: `A${rowIndex}`, values: [[submission.username]] });
+      if (submission.dateSubmitted && !existingDate)
+        updates.push({ range: `B${rowIndex}`, values: [[submission.dateSubmitted]] });
+
+      updates.push({ range: `D${rowIndex}:F${rowIndex}`, values: [[submission.views || 0, submission.likes || 0, today]] });
     } else {
-      // Row doesn't exist — append link in C and stats in D, E, F
-      // Find first empty row in column C
-      const lastRow = rows.length + 1;
-      await sheets.spreadsheets.values.update({
+      // No match — append new row
+      const nextRow = rows.length + 1;
+      updates.push({
+        range: `A${nextRow}:F${nextRow}`,
+        values: [[
+          submission.username || '',
+          submission.dateSubmitted || today,
+          submission.link,
+          submission.views || 0,
+          submission.likes || 0,
+          today,
+        ]],
+      });
+    }
+
+    if (updates.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: campaign.sheetId,
-        range: `C${lastRow}:F${lastRow}`,
-        valueInputOption: 'RAW',
-        requestBody: { values: [[submission.link, submission.views || 0, submission.likes || 0, today]] },
+        requestBody: { valueInputOption: 'RAW', data: updates },
       });
     }
   } catch (err) {
     console.error('Sheets update error:', err.message);
-  }
-}
-
-// Removes a row from the sheet by TikTok link
-async function removeSheetRow(campaignValue, link) {
-  try {
-    const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
-    if (!campaign || !campaign.sheetId) return;
-
-    const auth = getGoogleAuth();
-    const sheets = google.sheets({ version: 'v4', auth });
-    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId: campaign.sheetId });
-    const gid = spreadsheet.data.sheets[0].properties.sheetId;
-
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: campaign.sheetId,
-      range: 'C:C',
-    });
-
-    const rows = res.data.values || [];
-    let rowIndex = -1;
-    for (let i = 1; i < rows.length; i++) {
-      if (rows[i][0] === link) { rowIndex = i; break; } // 0-indexed for API
-    }
-
-    if (rowIndex < 0) return;
-
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: campaign.sheetId,
-      requestBody: {
-        requests: [{
-          deleteDimension: {
-            range: { sheetId: gid, dimension: 'ROWS', startIndex: rowIndex, endIndex: rowIndex + 1 },
-          },
-        }],
-      },
-    });
-  } catch (err) {
-    console.error('Sheets remove row error:', err.message);
   }
 }
 
@@ -221,16 +219,28 @@ async function updateAllStats() {
       const campaign = CAMPAIGNS.find(c => c.value === sub.campaignValue);
       if (!campaign) continue;
       if (new Date() > campaign.endDate && sub.views > 0) continue;
+
       const videoId = await extractVideoId(sub.link);
       if (!videoId) continue;
+
       const stats = await fetchTikTokStats(videoId);
       if (!stats) continue;
+
       const earnings = calculateEarnings(stats.views, campaign);
+
       await db.collection('submissions').updateOne(
         { _id: sub._id },
-        { $set: { views: stats.views, likes: stats.likes, earnings, lastUpdated: new Date() } }
+        { $set: { views: stats.views, likes: stats.likes, earnings, lastUpdated: new Date(), videoId } }
       );
-      await updateSheetRow({ ...sub, views: stats.views, likes: stats.likes });
+
+      await updateSheetRow({
+        ...sub,
+        videoId,
+        views: stats.views,
+        likes: stats.likes,
+        dateSubmitted: sub.submittedAt ? dateStr(sub.submittedAt) : todayStr(),
+      });
+
       updated++;
     }
     console.log(`[Stats] Updated ${updated}/${approved.length} submissions`);
@@ -241,7 +251,7 @@ async function updateAllStats() {
 
 // ===== HELPERS =====
 function timeAgo(date) {
-  if (!date) return 'never';
+  if (!date) return null;
   const mins = Math.floor((Date.now() - new Date(date).getTime()) / 60000);
   if (mins < 60) return `${mins}m ago`;
   if (mins < 1440) return `${Math.floor(mins / 60)}h ago`;
@@ -269,6 +279,15 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName('earnings')
+    .setDescription('Full earnings breakdown for a campaign — owner only')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption(opt =>
+      opt.setName('campaign').setDescription('Which campaign').setRequired(true)
+        .addChoices(...CAMPAIGNS.map(c => ({ name: c.label, value: c.value })))
+    ),
+
+  new SlashCommandBuilder()
     .setName('addsubmission')
     .setDescription('Manually add a past submission — owner only')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -285,7 +304,7 @@ const commands = [
     .setName('removesubmission')
     .setDescription('Remove a submission by TikTok link — owner only')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addStringOption(opt => opt.setName('link').setDescription('TikTok link of the submission to remove').setRequired(true)),
+    .addStringOption(opt => opt.setName('link').setDescription('TikTok link to remove').setRequired(true)),
 
   new SlashCommandBuilder()
     .setName('panel')
@@ -363,7 +382,6 @@ async function buildMySubmissionsEmbed(userId) {
           .find({ campaignValue: sub.campaignValue, status: 'Approved ✅' })
           .toArray();
 
-        // Combine views per user for rank
         const userTotals = {};
         for (const s of allApproved) {
           if (!userTotals[s.userId]) userTotals[s.userId] = 0;
@@ -372,7 +390,6 @@ async function buildMySubmissionsEmbed(userId) {
         const sorted = Object.entries(userTotals).sort((a, b) => b[1] - a[1]);
         const rank = sorted.findIndex(([uid]) => uid === sub.userId) + 1;
 
-        // Total earnings across all this user's posts in this campaign
         const totalEarnings = allApproved
           .filter(s => s.userId === sub.userId)
           .reduce((sum, s) => sum + (s.earnings || 0), 0);
@@ -384,7 +401,8 @@ async function buildMySubmissionsEmbed(userId) {
         }
       }
 
-      description += `└ 🕐 Updated ${timeAgo(sub.lastUpdated)}\n\n`;
+      const ago = timeAgo(sub.lastUpdated);
+      description += `└ 🕐 ${ago ? `Updated ${ago}` : 'Not updated yet — check back in 12 hours'}\n\n`;
     } else if (sub.status === 'Rejected ❌') {
       description += `🔴 **${sub.clipName}** — Rejected\n\n`;
     } else {
@@ -418,7 +436,6 @@ async function buildLeaderboardText(campaignValue) {
 
   if (approved.length === 0) { text += '*No approved submissions yet.*'; return text; }
 
-  // Combine all posts per user into one total
   const userTotals = {};
   for (const sub of approved) {
     if (!userTotals[sub.userId]) userTotals[sub.userId] = 0;
@@ -436,6 +453,62 @@ async function buildLeaderboardText(campaignValue) {
     text += `${medal} <@${userId}> — ${fmtViews(totalViews)} views${bonusNote}\n`;
   }
   text += `\n*Rankings update every 12 hours.*`;
+  return text;
+}
+
+// ===== BUILD: EARNINGS (owner only) =====
+async function buildEarningsText(campaignValue) {
+  const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
+  if (!campaign) return '❌ Campaign not found.';
+
+  const approved = await db.collection('submissions')
+    .find({ campaignValue, status: 'Approved ✅' })
+    .toArray();
+
+  const isActive = new Date() < campaign.endDate;
+  const endTs = Math.floor(campaign.endDate.getTime() / 1000);
+
+  // Combine per user
+  const userMap = {};
+  for (const sub of approved) {
+    if (!userMap[sub.userId]) userMap[sub.userId] = { views: 0, earnings: 0 };
+    userMap[sub.userId].views += sub.views || 0;
+    userMap[sub.userId].earnings += sub.earnings || 0;
+  }
+  const sorted = Object.entries(userMap).sort((a, b) => b[1].views - a[1].views);
+
+  let totalRpm = 0;
+  for (const [, data] of sorted) totalRpm += data.earnings;
+  const budgetRemaining = Math.max(0, campaign.budget - totalRpm);
+
+  let text = `💰 **${campaign.label} — Earnings Breakdown**\n`;
+  text += isActive ? `🟢 Active — ends <t:${endTs}:R>\n` : `🔴 Campaign ended\n`;
+  text += `📊 Budget: ${fmtUSD(campaign.budget)} | Spent: ${fmtUSD(totalRpm)} | Remaining: ${fmtUSD(budgetRemaining)}\n`;
+  text += `🎁 Bonuses (separate): 🥇 ${fmtUSD(campaign.bonus1st)} · 🥈 ${fmtUSD(campaign.bonus2nd)}\n\n`;
+
+  if (sorted.length === 0) { text += '*No approved submissions yet.*'; return text; }
+
+  const medals = ['🥇', '🥈', '🥉'];
+  for (let i = 0; i < sorted.length; i++) {
+    const [userId, data] = sorted[i];
+    const medal = medals[i] || `${i + 1}.`;
+    const rpm = data.earnings;
+    let bonusStr = '';
+    let totalStr = fmtUSD(rpm);
+
+    if (i === 0) {
+      bonusStr = ` + ${fmtUSD(campaign.bonus1st)} bonus`;
+      totalStr = fmtUSD(rpm + campaign.bonus1st);
+    } else if (i === 1) {
+      bonusStr = ` + ${fmtUSD(campaign.bonus2nd)} bonus`;
+      totalStr = fmtUSD(rpm + campaign.bonus2nd);
+    }
+
+    text += `${medal} <@${userId}> — ${fmtViews(data.views)} views\n`;
+    text += `   💵 ${fmtUSD(rpm)} (RPM)${bonusStr} = **${totalStr}**\n`;
+  }
+
+  text += `\n*Earnings are based on current view counts and update every 12 hours.*`;
   return text;
 }
 
@@ -482,6 +555,19 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /earnings ─────────────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'earnings') {
+    if (!isOwner(interaction.user.id))
+      return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      return interaction.editReply({ content: await buildEarningsText(interaction.options.getString('campaign')) });
+    } catch (err) {
+      console.error('earnings error:', err);
+      return interaction.editReply({ content: '❌ Something went wrong.' });
+    }
+  }
+
   // ── /addsubmission ────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'addsubmission') {
     if (!isOwner(interaction.user.id))
@@ -492,6 +578,7 @@ client.on('interactionCreate', async interaction => {
       const campaignValue = interaction.options.getString('campaign');
       const link = interaction.options.getString('link').trim();
       const clipName = interaction.options.getString('name') || 'Untitled';
+      const submittedDate = interaction.options.getString('date') || todayStr();
       const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
 
       if (!link.includes('tiktok.com'))
@@ -520,7 +607,14 @@ client.on('interactionCreate', async interaction => {
         submittedAt: new Date(),
       });
 
-      await updateSheetRow({ campaignValue, link, views: 0, likes: 0 });
+      await updateSheetRow({
+        campaignValue,
+        link,
+        username: user.username,
+        dateSubmitted: submittedDate,
+        views: 0,
+        likes: 0,
+      });
 
       return interaction.editReply({
         content: `✅ Added **${clipName}** for <@${user.id}> to **${campaign.label}** — Post #${campaignNumber}\nRun \`/updatestats\` to fetch views now.`,
@@ -542,10 +636,8 @@ client.on('interactionCreate', async interaction => {
       if (!sub) return interaction.editReply({ content: '❌ No submission found with that link.' });
 
       await db.collection('submissions').deleteOne({ link });
-      await removeSheetRow(sub.campaignValue, link);
-
       return interaction.editReply({
-        content: `✅ Removed submission by <@${sub.userId}> from **${sub.campaignLabel}**\n🔗 ${link}`,
+        content: `✅ Removed submission by <@${sub.userId}> from **${sub.campaignLabel}**\n🔗 ${link}\n\n*Note: please delete the row from the Google Sheet manually.*`,
       });
     } catch (err) {
       console.error('removesubmission error:', err);
@@ -750,7 +842,14 @@ client.on('interactionCreate', async interaction => {
         });
 
         if (isApproved) {
-          await updateSheetRow({ campaignValue: sub.campaignValue, link: sub.link, views: 0, likes: 0 });
+          await updateSheetRow({
+            campaignValue: sub.campaignValue,
+            link: sub.link,
+            username: sub.username,
+            dateSubmitted: sub.submittedAt ? dateStr(sub.submittedAt) : todayStr(),
+            views: 0,
+            likes: 0,
+          });
         }
 
         try {
