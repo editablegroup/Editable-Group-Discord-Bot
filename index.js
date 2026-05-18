@@ -480,10 +480,16 @@ async function buildLeaderboardText(campaignValue) {
   for (const sub of approved) totalRpmEarned += sub.earnings || 0;
   const budgetRemaining = Math.max(0, campaign.budget - totalRpmEarned);
 
+  const lastRun = await db.collection('metadata').findOne({ key: 'lastStatsRun' });
+  const lastRunAgo = lastRun ? timeAgo(lastRun.value) : null;
+  const totalViews = approved.reduce((sum, s) => sum + (s.views || 0), 0);
+
   let text = `🏆 **${campaign.label} — Leaderboard**\n`;
   text += isActive ? `🟢 Active — ends <t:${endTs}:R>\n` : `🔴 Campaign ended\n`;
+  text += `👁️ Total views: ${fmtViews(totalViews)}\n`;
   text += `💰 Budget remaining: ${fmtUSD(budgetRemaining)} / ${fmtUSD(campaign.budget)}\n`;
-  text += `🎁 Bonuses: 🥇 ${fmtUSD(campaign.bonus1st)} · 🥈 ${fmtUSD(campaign.bonus2nd)}\n\n`;
+  text += `🎁 Bonuses: 🥇 ${fmtUSD(campaign.bonus1st)} · 🥈 ${fmtUSD(campaign.bonus2nd)}\n`;
+  text += `🕐 ${lastRunAgo ? `Updated ${lastRunAgo}` : 'Not updated yet'} · Updates every 12h\n\n`;
 
   if (approved.length === 0) { text += '*No approved submissions yet.*'; return text; }
 
@@ -531,10 +537,16 @@ async function buildEarningsText(campaignValue) {
   for (const [, data] of sorted) totalRpm += data.earnings;
   const budgetRemaining = Math.max(0, campaign.budget - totalRpm);
 
+ const lastRun = await db.collection('metadata').findOne({ key: 'lastStatsRun' });
+  const lastRunAgo = lastRun ? timeAgo(lastRun.value) : null;
+  const totalViews = Object.values(userMap).reduce((sum, d) => sum + d.views, 0);
+
   let text = `💰 **${campaign.label} — Earnings Breakdown**\n`;
   text += isActive ? `🟢 Active — ends <t:${endTs}:R>\n` : `🔴 Campaign ended\n`;
+  text += `👁️ Total views: ${fmtViews(totalViews)}\n`;
   text += `📊 Budget: ${fmtUSD(campaign.budget)} | Spent: ${fmtUSD(totalRpm)} | Remaining: ${fmtUSD(budgetRemaining)}\n`;
-  text += `🎁 Bonuses (on top of budget): 🥇 ${fmtUSD(campaign.bonus1st)} · 🥈 ${fmtUSD(campaign.bonus2nd)}\n\n`;
+  text += `🎁 Bonuses (on top of budget): 🥇 ${fmtUSD(campaign.bonus1st)} · 🥈 ${fmtUSD(campaign.bonus2nd)}\n`;
+  text += `🕐 ${lastRunAgo ? `Updated ${lastRunAgo}` : 'Not updated yet'} · Updates every 12h\n\n`;
 
   if (sorted.length === 0) { text += '*No approved submissions yet.*'; return text; }
 
