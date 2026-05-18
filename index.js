@@ -45,8 +45,8 @@ function dateStr(d) {
 }
 
 // ===== CAMPAIGNS =====
-// sheetId: null = bot auto-creates a new sheet on first /updatestats run.
-// Once created the ID is stored in MongoDB — no need to add it back here.
+// sheetId: null = bot auto-creates a fresh sheet on first /updatestats.
+// Once created the ID is saved in MongoDB — no need to set it here.
 const CAMPAIGNS = [
   {
     label: 'Alter Ego - Doechii Ft. JT',
@@ -124,7 +124,7 @@ function getGoogleAuth() {
 }
 
 // Returns sheet ID for a campaign.
-// Priority: hardcoded sheetId in CAMPAIGNS → stored in MongoDB → create new sheet.
+// Creates a new sheet directly inside the Drive folder if none exists.
 async function getOrCreateSheet(campaignValue, campaignLabel) {
   const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
   if (campaign && campaign.sheetId) return campaign.sheetId;
@@ -137,38 +137,39 @@ async function getOrCreateSheet(campaignValue, campaignLabel) {
   const sheets = google.sheets({ version: 'v4', auth });
   const drive = google.drive({ version: 'v3', auth });
 
-  // Create plain spreadsheet — no formatting (avoids permission issues)
-  const spreadsheet = await sheets.spreadsheets.create({
-    requestBody: { properties: { title: `Editable Group — ${campaignLabel}` } },
+  // Create directly inside the Drive folder — no move needed
+  const file = await drive.files.create({
+    requestBody: {
+      name: `Editable Group — ${campaignLabel}`,
+      mimeType: 'application/vnd.google-apps.spreadsheet',
+      parents: [DRIVE_FOLDER_ID],
+    },
+    fields: 'id',
   });
-  const sheetId = spreadsheet.data.spreadsheetId;
+  const sheetId = file.data.id;
 
-  // Write header row (row 1). Column G is hidden videoId for internal matching.
+  // Write header row
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
     range: 'Sheet1!A1:G1',
     valueInputOption: 'RAW',
-    requestBody: { values: [['Creator', 'Date', 'Video Link', 'Views', 'Likes', 'Last Updated', 'videoId']] },
-  });
-
-  // Move into the shared Drive folder
-  const file = await drive.files.get({ fileId: sheetId, fields: 'parents' });
-  const previousParents = (file.data.parents || []).join(',');
-  await drive.files.update({
-    fileId: sheetId,
-    addParents: DRIVE_FOLDER_ID,
-    removeParents: previousParents,
-    fields: 'id, parents',
+    requestBody: {
+      values: [['Creator', 'Date', 'Video Link', 'Views', 'Likes', 'Last Updated', 'videoId']],
+    },
   });
 
   // Share with official email as editor
-  await drive.permissions.create({
-    fileId: sheetId,
-    requestBody: { role: 'writer', type: 'user', emailAddress: OFFICIAL_EMAIL },
-    sendNotificationEmail: false,
-  });
+  try {
+    await drive.permissions.create({
+      fileId: sheetId,
+      requestBody: { role: 'writer', type: 'user', emailAddress: OFFICIAL_EMAIL },
+      sendNotificationEmail: false,
+    });
+  } catch (e) {
+    console.log('[Sheets] Could not share with official email:', e.message);
+  }
 
-  // Save to MongoDB so it's never recreated
+  // Save ID to MongoDB so it is never recreated
   await db.collection('campaigns').updateOne(
     { value: campaignValue },
     { $set: { value: campaignValue, label: campaignLabel, sheetId } },
@@ -179,10 +180,8 @@ async function getOrCreateSheet(campaignValue, campaignLabel) {
   return sheetId;
 }
 
-// Updates a row in the sheet.
-// Matches by video ID in column G (hidden) — 100% reliable.
-// Writes: A (nickname if empty), B (date if empty), C (link if new), D (views), E (likes), G (videoId).
-// F header is updated once per stats run via updateSheetTimestamp — never per row.
+// Updates a row. Matches by videoId in hidden column G.
+// Writes: A (nickname if empty), B (date if empty), D (views), E (likes), G (videoId).
 async function updateSheetRow(submission) {
   try {
     const campaign = CAMPAIGNS.find(c => c.value === submission.campaignValue);
@@ -199,17 +198,13 @@ async function updateSheetRow(submission) {
 
     const rows = res.data.values || [];
     const subVideoId = submission.videoId || extractVideoIdFromUrl(submission.link);
-
     let rowIndex = -1;
 
-    // Primary: match by column G (videoId)
     if (subVideoId) {
       for (let i = 1; i < rows.length; i++) {
         if ((rows[i][6] || '').trim() === subVideoId) { rowIndex = i + 1; break; }
       }
     }
-
-    // Fallback: match by link in column C
     if (rowIndex < 0) {
       for (let i = 1; i < rows.length; i++) {
         const cellLink = (rows[i][2] || '').trim();
@@ -255,7 +250,7 @@ async function updateSheetRow(submission) {
   }
 }
 
-// Writes "Last Updated: DD/MM/YYYY" once to the F1 header cell
+// Updates "Last Updated: DD/MM/YYYY" in the F1 header cell once per stats run
 async function updateSheetTimestamp(campaignValue) {
   try {
     const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
@@ -280,7 +275,7 @@ async function extractVideoId(url) {
   if (direct) return direct[1];
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    const timeout = setTimeout(() => controller.abort(), 5000);
     const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: controller.signal });
     clearTimeout(timeout);
     const match = res.url.match(/video\/(\d+)/);
