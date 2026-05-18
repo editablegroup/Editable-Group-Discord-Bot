@@ -28,23 +28,25 @@ const OWNER_ID = '960171711674847282';
 const ROCA_ID = '996919845373366362';
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const RAPIDAPI_HOST = 'tiktok-api23.p.rapidapi.com';
+const DRIVE_FOLDER_ID = '1gDspJmanWRPDtR8MwBivjMj9MEpkUBkK';
+const OFFICIAL_EMAIL = 'official@editablegroup.co.uk';
 const TWELVE_HOURS = 12 * 60 * 60 * 1000;
 
 function isOwner(userId) {
   return userId === OWNER_ID || userId === ROCA_ID;
 }
-
 function todayStr() {
   const now = new Date();
   return `${String(now.getDate()).padStart(2,'0')}/${String(now.getMonth()+1).padStart(2,'0')}/${now.getFullYear()}`;
 }
-
 function dateStr(d) {
   const dt = new Date(d);
   return `${String(dt.getDate()).padStart(2,'0')}/${String(dt.getMonth()+1).padStart(2,'0')}/${dt.getFullYear()}`;
 }
 
 // ===== CAMPAIGNS =====
+// sheetId: set to null to have the bot auto-create a new sheet for that campaign.
+// Once created, the sheet ID is stored in MongoDB — you don't need to add it back here.
 const CAMPAIGNS = [
   {
     label: 'Alter Ego - Doechii Ft. JT',
@@ -56,7 +58,7 @@ const CAMPAIGNS = [
     bonus1st: 150,
     bonus2nd: 75,
     endDate: new Date('2026-05-20T23:59:59Z'),
-    sheetId: '15fKPdzV82K2FuDtBl8dC6Q8THi4fC4h0K8cMCizBJTA',
+    sheetId: null, // set to null = bot creates a fresh sheet on next /updatestats
   },
   {
     label: 'SHAKE THAT - JIG LeFrost',
@@ -68,9 +70,9 @@ const CAMPAIGNS = [
     bonus1st: 100,
     bonus2nd: 50,
     endDate: new Date('2026-05-24T23:59:59Z'),
-    sheetId: '1PZt1hPoZPnoJIbsV_GaAaBqmetQT1ctfmo8ANzFt2F4',
+    sheetId: null,
   },
-  // { label: 'Campaign Name', value: 'campaign_value', rpm: 1.00, maxPayout: 350, minViews: 1500, budget: 1000, bonus1st: 150, bonus2nd: 75, endDate: new Date('2026-06-01T23:59:59Z'), sheetId: 'SHEET_ID_HERE' },
+  // { label: 'Campaign Name', value: 'campaign_value', rpm: 1.00, maxPayout: 350, minViews: 1500, budget: 1000, bonus1st: 150, bonus2nd: 75, endDate: new Date('2026-06-01T23:59:59Z'), sheetId: null },
 ];
 
 // ===== MONGODB =====
@@ -80,6 +82,34 @@ async function connectDB() {
   await mongoClient.connect();
   db = mongoClient.db('editablegroup');
   console.log('Connected to MongoDB');
+}
+
+// ===== HELPERS =====
+function timeAgo(date) {
+  if (!date) return null;
+  const mins = Math.floor((Date.now() - new Date(date).getTime()) / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1440) return `${Math.floor(mins / 60)}h ago`;
+  return `${Math.floor(mins / 1440)}d ago`;
+}
+function fmtViews(n) { return (n || 0).toLocaleString('en-US'); }
+function fmtUSD(n) { return `$${(n || 0).toFixed(2)}`; }
+function extractVideoIdFromUrl(url) {
+  if (!url) return null;
+  const match = url.match(/video\/(\d+)/);
+  return match ? match[1] : null;
+}
+
+// Gets the server nickname of a user, falls back to their username
+async function getServerNickname(userId) {
+  try {
+    const guild = client.guilds.cache.get(GUILD_ID);
+    if (!guild) return null;
+    const member = await guild.members.fetch(userId);
+    return member.nickname || member.user.username;
+  } catch {
+    return null;
+  }
 }
 
 // ===== GOOGLE SHEETS =====
@@ -94,74 +124,183 @@ function getGoogleAuth() {
   });
 }
 
-function extractVideoIdFromUrl(url) {
-  if (!url) return null;
-  const match = url.match(/video\/(\d+)/);
-  return match ? match[1] : null;
+// Returns the sheet ID for a campaign.
+// Priority: hardcoded sheetId in CAMPAIGNS → stored in MongoDB → create new sheet.
+async function getOrCreateSheet(campaignValue, campaignLabel) {
+  // Check if hardcoded in CAMPAIGNS
+  const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
+  if (campaign && campaign.sheetId) return campaign.sheetId;
+
+  // Check MongoDB for a previously auto-created sheet
+  const stored = await db.collection('campaigns').findOne({ value: campaignValue });
+  if (stored && stored.sheetId) return stored.sheetId;
+
+  // Create a brand new sheet
+  console.log(`[Sheets] Creating new sheet for "${campaignLabel}"...`);
+  const auth = getGoogleAuth();
+  const sheets = google.sheets({ version: 'v4', auth });
+  const drive = google.drive({ version: 'v3', auth });
+
+  const spreadsheet = await sheets.spreadsheets.create({
+    requestBody: {
+      properties: { title: `Editable Group — ${campaignLabel}` },
+      sheets: [{ properties: { title: 'Submissions', gridProperties: { rowCount: 1000, columnCount: 7 } } }],
+    },
+  });
+
+  const sheetId = spreadsheet.data.spreadsheetId;
+  const gid = spreadsheet.data.sheets[0].properties.sheetId;
+
+  // Apply formatting
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: sheetId,
+    requestBody: {
+      requests: [
+        // Merge A1:G1 for banner
+        { mergeCells: { range: { sheetId: gid, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 7 }, mergeType: 'MERGE_ALL' } },
+        // Blue background + white bold text for banner row
+        {
+          repeatCell: {
+            range: { sheetId: gid, startRowIndex: 0, endRowIndex: 1 },
+            cell: { userEnteredFormat: { backgroundColor: { red: 0.204, green: 0.467, blue: 0.890 }, textFormat: { bold: true, fontSize: 20, foregroundColor: { red: 1, green: 1, blue: 1 } }, horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE' } },
+            fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)',
+          },
+        },
+        // Banner row height
+        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'ROWS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 80 }, fields: 'pixelSize' } },
+        // Header row formatting
+        {
+          repeatCell: {
+            range: { sheetId: gid, startRowIndex: 1, endRowIndex: 2 },
+            cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.93, green: 0.93, blue: 0.93 } } },
+            fields: 'userEnteredFormat(textFormat,backgroundColor)',
+          },
+        },
+        // Column widths
+        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 130 }, fields: 'pixelSize' } },
+        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 1, endIndex: 2 }, properties: { pixelSize: 100 }, fields: 'pixelSize' } },
+        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 2, endIndex: 3 }, properties: { pixelSize: 320 }, fields: 'pixelSize' } },
+        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 3, endIndex: 4 }, properties: { pixelSize: 140 }, fields: 'pixelSize' } },
+        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 4, endIndex: 5 }, properties: { pixelSize: 140 }, fields: 'pixelSize' } },
+        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 5, endIndex: 6 }, properties: { pixelSize: 140 }, fields: 'pixelSize' } },
+        // Hide column G (videoId — used internally for row matching)
+        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 6, endIndex: 7 }, properties: { hiddenByUser: true, pixelSize: 0 }, fields: 'hiddenByUser,pixelSize' } },
+      ],
+    },
+  });
+
+  // Banner text + headers with live SUM formulas
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: sheetId,
+    requestBody: {
+      valueInputOption: 'USER_ENTERED',
+      data: [
+        { range: 'Submissions!A1', values: [['EDITABLE GROUP']] },
+        {
+          range: 'Submissions!A2:G2',
+          values: [[
+            '👤 Creator',
+            '📅 Date',
+            '🔗 Video Link',
+            '=CONCAT("👁️ Views - ",TEXT(SUM(D3:D1000),"#,##0"))',
+            '=CONCAT("❤️ Likes - ",TEXT(SUM(E3:E1000),"#,##0"))',
+            `🕐 Last Updated: ${todayStr()}`,
+            'videoId',
+          ]],
+        },
+      ],
+    },
+  });
+
+  // Move to Drive folder
+  const file = await drive.files.get({ fileId: sheetId, fields: 'parents' });
+  const previousParents = (file.data.parents || []).join(',');
+  await drive.files.update({ fileId: sheetId, addParents: DRIVE_FOLDER_ID, removeParents: previousParents, fields: 'id, parents' });
+
+  // Share with official email
+  await drive.permissions.create({
+    fileId: sheetId,
+    requestBody: { role: 'writer', type: 'user', emailAddress: OFFICIAL_EMAIL },
+    sendNotificationEmail: false,
+  });
+
+  // Save sheet ID in MongoDB
+  await db.collection('campaigns').updateOne(
+    { value: campaignValue },
+    { $set: { value: campaignValue, label: campaignLabel, sheetId } },
+    { upsert: true }
+  );
+
+  console.log(`[Sheets] Created sheet for "${campaignLabel}" — ID: ${sheetId}`);
+  return sheetId;
 }
 
-// Updates one row in the existing campaign sheet.
-// Matches by videoId (works for both short and full URLs).
-// Only writes: A (username, if empty), B (date, if empty), D (views), E (likes).
-// Column F (Last Updated) is written once per campaign in the header — not per row.
+// Updates a row in the sheet. Matches by video ID in hidden column G — 100% reliable.
+// Writes: A (nickname, if empty), B (date, if empty), C (link, if new row), D (views), E (likes), G (videoId).
+// F is only written to in the header (updateSheetTimestamp) — never per row.
 async function updateSheetRow(submission) {
   try {
     const campaign = CAMPAIGNS.find(c => c.value === submission.campaignValue);
-    if (!campaign || !campaign.sheetId) return;
+    const sheetId = await getOrCreateSheet(submission.campaignValue, campaign?.label || submission.campaignValue);
+    if (!sheetId) return;
 
     const auth = getGoogleAuth();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: campaign.sheetId,
-      range: 'A:E',
-    });
-
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'A:G' });
     const rows = res.data.values || [];
     const subVideoId = submission.videoId || extractVideoIdFromUrl(submission.link);
 
     let rowIndex = -1;
-    for (let i = 1; i < rows.length; i++) {
-      const cellLink = (rows[i][2] || '').trim();
-      if (!cellLink) continue;
-      if (cellLink === submission.link.trim()) { rowIndex = i + 1; break; }
-      if (subVideoId) {
-        if (cellLink.includes(subVideoId)) { rowIndex = i + 1; break; }
-        const cellVideoId = extractVideoIdFromUrl(cellLink);
-        if (cellVideoId && cellVideoId === subVideoId) { rowIndex = i + 1; break; }
+
+    // Primary match: column G (hidden videoId column) — never fails
+    if (subVideoId) {
+      for (let i = 2; i < rows.length; i++) {
+        if ((rows[i][6] || '').trim() === subVideoId) { rowIndex = i + 1; break; }
+      }
+    }
+
+    // Fallback: match by link in column C
+    if (rowIndex < 0) {
+      for (let i = 2; i < rows.length; i++) {
+        const cellLink = (rows[i][2] || '').trim();
+        if (!cellLink) continue;
+        if (cellLink === (submission.link || '').trim()) { rowIndex = i + 1; break; }
+        if (subVideoId && cellLink.includes(subVideoId)) { rowIndex = i + 1; break; }
       }
     }
 
     const updates = [];
 
     if (rowIndex > 0) {
-      // Row exists — update A (username) and B (date) only if currently empty
-      const existingUsername = (rows[rowIndex - 1]?.[0] || '').trim();
-      const existingDate = (rows[rowIndex - 1]?.[1] || '').trim();
-      if (submission.username && !existingUsername)
-        updates.push({ range: `A${rowIndex}`, values: [[submission.username]] });
-      if (submission.dateSubmitted && !existingDate)
-        updates.push({ range: `B${rowIndex}`, values: [[submission.dateSubmitted]] });
-      // Always update views (D) and likes (E)
+      // Existing row — update D (views), E (likes), G (videoId)
+      // Only overwrite A (nickname) if currently empty
+      const existingNickname = (rows[rowIndex - 1]?.[0] || '').trim();
+      if (submission.nickname && !existingNickname)
+        updates.push({ range: `A${rowIndex}`, values: [[submission.nickname]] });
       updates.push({ range: `D${rowIndex}:E${rowIndex}`, values: [[submission.views || 0, submission.likes || 0]] });
+      if (subVideoId)
+        updates.push({ range: `G${rowIndex}`, values: [[subVideoId]] });
     } else {
-      // No matching row — append a new one (A, B, C, D, E only — no F)
-      const nextRow = rows.length + 1;
+      // New row — append starting from row 3
+      const nextRow = Math.max(rows.length + 1, 3);
       updates.push({
-        range: `A${nextRow}:E${nextRow}`,
+        range: `A${nextRow}:G${nextRow}`,
         values: [[
-          submission.username || '',
+          submission.nickname || '',
           submission.dateSubmitted || todayStr(),
-          submission.link,
+          submission.link || '',
           submission.views || 0,
           submission.likes || 0,
+          '',           // F — left empty per row (header has last updated)
+          subVideoId || '',
         ]],
       });
     }
 
     if (updates.length > 0) {
       await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: campaign.sheetId,
+        spreadsheetId: sheetId,
         requestBody: { valueInputOption: 'RAW', data: updates },
       });
     }
@@ -170,15 +309,16 @@ async function updateSheetRow(submission) {
   }
 }
 
-// Writes "Last Updated: DD/MM/YYYY" once into the F2 header cell of a campaign sheet
+// Writes "🕐 Last Updated: DD/MM/YYYY" once to the F2 header cell
 async function updateSheetTimestamp(campaignValue) {
   try {
     const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
-    if (!campaign || !campaign.sheetId) return;
+    const sheetId = await getOrCreateSheet(campaignValue, campaign?.label || campaignValue);
+    if (!sheetId) return;
     const auth = getGoogleAuth();
     const sheets = google.sheets({ version: 'v4', auth });
     await sheets.spreadsheets.values.update({
-      spreadsheetId: campaign.sheetId,
+      spreadsheetId: sheetId,
       range: 'F2',
       valueInputOption: 'RAW',
       requestBody: { values: [[`🕐 Last Updated: ${todayStr()}`]] },
@@ -226,13 +366,11 @@ function calculateEarnings(views, campaign) {
   return Math.min((views / 1000) * campaign.rpm, campaign.maxPayout);
 }
 
-// Returns true if 12h have passed since last stats run (or if never run)
 async function canRunStats() {
   try {
     const record = await db.collection('metadata').findOne({ key: 'lastStatsRun' });
     if (!record) return true;
-    const elapsed = Date.now() - new Date(record.value).getTime();
-    return elapsed >= TWELVE_HOURS;
+    return (Date.now() - new Date(record.value).getTime()) >= TWELVE_HOURS;
   } catch { return true; }
 }
 
@@ -244,13 +382,11 @@ async function markStatsRun() {
   );
 }
 
-// force=true bypasses the 12h throttle (used by /updatestats command)
 async function updateAllStats(force = false) {
   if (!force && !(await canRunStats())) {
     console.log('[Stats] Skipping — ran less than 12h ago');
     return;
   }
-
   console.log('[Stats] Starting update...');
   await markStatsRun();
 
@@ -277,9 +413,13 @@ async function updateAllStats(force = false) {
         { $set: { views: stats.views, likes: stats.likes, earnings, lastUpdated: new Date(), videoId } }
       );
 
+      // Get server nickname for sheet
+      const nickname = await getServerNickname(sub.userId);
+
       await updateSheetRow({
         ...sub,
         videoId,
+        nickname: nickname || sub.username || 'Unknown',
         views: stats.views,
         likes: stats.likes,
         dateSubmitted: sub.submittedAt ? dateStr(sub.submittedAt) : todayStr(),
@@ -289,7 +429,7 @@ async function updateAllStats(force = false) {
       updated++;
     }
 
-    // Write "Last Updated" once per campaign in the F2 header cell
+    // Update F2 timestamp once per campaign
     for (const campaignValue of updatedCampaigns) {
       await updateSheetTimestamp(campaignValue);
     }
@@ -299,17 +439,6 @@ async function updateAllStats(force = false) {
     console.error('[Stats] Error:', err.message);
   }
 }
-
-// ===== HELPERS =====
-function timeAgo(date) {
-  if (!date) return null;
-  const mins = Math.floor((Date.now() - new Date(date).getTime()) / 60000);
-  if (mins < 60) return `${mins}m ago`;
-  if (mins < 1440) return `${Math.floor(mins / 60)}h ago`;
-  return `${Math.floor(mins / 1440)}d ago`;
-}
-function fmtViews(n) { return (n || 0).toLocaleString('en-US'); }
-function fmtUSD(n) { return `$${(n || 0).toFixed(2)}`; }
 
 // ===== CLIENT =====
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
@@ -387,9 +516,7 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 // ===== READY =====
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
-  // Throttled startup run — skips if ran less than 12h ago
   setTimeout(() => updateAllStats(false), 15000);
-  // Scheduled every 12h — also throttled
   setInterval(() => updateAllStats(false), TWELVE_HOURS);
 });
 
@@ -479,10 +606,9 @@ async function buildLeaderboardText(campaignValue) {
   let totalRpmEarned = 0;
   for (const sub of approved) totalRpmEarned += sub.earnings || 0;
   const budgetRemaining = Math.max(0, campaign.budget - totalRpmEarned);
-
+  const totalViews = approved.reduce((sum, s) => sum + (s.views || 0), 0);
   const lastRun = await db.collection('metadata').findOne({ key: 'lastStatsRun' });
   const lastRunAgo = lastRun ? timeAgo(lastRun.value) : null;
-  const totalViews = approved.reduce((sum, s) => sum + (s.views || 0), 0);
 
   let text = `🏆 **${campaign.label} — Leaderboard**\n`;
   text += isActive ? `🟢 Active — ends <t:${endTs}:R>\n` : `🔴 Campaign ended\n`;
@@ -509,6 +635,7 @@ async function buildLeaderboardText(campaignValue) {
     if (i === 1) bonusNote = ` *(+${fmtUSD(campaign.bonus2nd)} bonus)*`;
     text += `${medal} <@${userId}> — ${fmtViews(totalViews)} views${bonusNote}\n`;
   }
+
   return text;
 }
 
@@ -535,10 +662,9 @@ async function buildEarningsText(campaignValue) {
   let totalRpm = 0;
   for (const [, data] of sorted) totalRpm += data.earnings;
   const budgetRemaining = Math.max(0, campaign.budget - totalRpm);
-
- const lastRun = await db.collection('metadata').findOne({ key: 'lastStatsRun' });
-  const lastRunAgo = lastRun ? timeAgo(lastRun.value) : null;
   const totalViews = Object.values(userMap).reduce((sum, d) => sum + d.views, 0);
+  const lastRun = await db.collection('metadata').findOne({ key: 'lastStatsRun' });
+  const lastRunAgo = lastRun ? timeAgo(lastRun.value) : null;
 
   let text = `💰 **${campaign.label} — Earnings Breakdown**\n`;
   text += isActive ? `🟢 Active — ends <t:${endTs}:R>\n` : `🔴 Campaign ended\n`;
@@ -559,6 +685,7 @@ async function buildEarningsText(campaignValue) {
     else if (i === 1) line += ` + ${fmtUSD(campaign.bonus2nd)} bonus = **${fmtUSD(rpm + campaign.bonus2nd)}**`;
     text += line + '\n';
   }
+
   text += `\n*Updates every 12 hours.*`;
   return text;
 }
@@ -653,10 +780,11 @@ client.on('interactionCreate', async interaction => {
         submittedAt: new Date(),
       });
 
+      const nickname = await getServerNickname(user.id);
       await updateSheetRow({
         campaignValue,
         link,
-        username: user.username,
+        nickname: nickname || user.username,
         dateSubmitted: submittedDate,
         views: 0,
         likes: 0,
@@ -748,7 +876,7 @@ client.on('interactionCreate', async interaction => {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
     await interaction.deferReply({ ephemeral: true });
-    await updateAllStats(true); // force = true bypasses 12h throttle
+    await updateAllStats(true);
     return interaction.editReply({ content: '✅ Stats updated.' });
   }
 
@@ -871,10 +999,11 @@ client.on('interactionCreate', async interaction => {
           components: [],
         });
         if (isApproved) {
+          const nickname = await getServerNickname(sub.userId);
           await updateSheetRow({
             campaignValue: sub.campaignValue,
             link: sub.link,
-            username: sub.username,
+            nickname: nickname || sub.username,
             dateSubmitted: sub.submittedAt ? dateStr(sub.submittedAt) : todayStr(),
             views: 0,
             likes: 0,
