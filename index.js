@@ -447,7 +447,7 @@ async function buildEarningsText(campaignValue) {
 // ===== BUILD: STATS — all posts sorted by date, each on its own line =====
 async function buildStatsText(campaignValue, filterUserId = null) {
   const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
-  if (!campaign) return '❌ Campaign not found.';
+  if (!campaign) return ['❌ Campaign not found.'];
 
   const query = { campaignValue, status: 'Approved ✅' };
   if (filterUserId) query.userId = filterUserId;
@@ -461,22 +461,34 @@ async function buildStatsText(campaignValue, filterUserId = null) {
   const lastRun = await db.collection('metadata').findOne({ key: 'lastStatsRun' });
   const lastRunAgo = lastRun ? timeAgo(lastRun.value) : null;
 
-  let text = filterUserId
+  const header = filterUserId
     ? `📊 **${campaign.label} — <@${filterUserId}> Posts**\n`
     : `📊 **${campaign.label} — All Posts**\n`;
-  text += isActive ? `🟢 Active\n` : `🔴 Campaign ended\n`;
-  text += `🕐 ${lastRunAgo ? `Updated ${lastRunAgo}` : 'Not updated yet'}\n\n`;
+  const meta =
+    (isActive ? `🟢 Active\n` : `🔴 Campaign ended\n`) +
+    `🕐 ${lastRunAgo ? `Updated ${lastRunAgo}` : 'Not updated yet'}\n\n`;
 
-  if (approved.length === 0) return text + '*No approved submissions yet.*';
+  if (approved.length === 0) return [header + meta + '*No approved submissions yet.*'];
 
-  for (const sub of approved) {
+  const blocks = approved.map(sub => {
     const subDate = sub.submittedAt ? dateStr(sub.submittedAt) : 'Unknown';
     const url = normalizeUrl(sub.link);
-    text += `📅 Posted ${subDate} · <@${sub.userId}>\n`;
-    text += `👁️ ${fmtViews(sub.views || 0)} views · ❤️ ${fmtViews(sub.likes || 0)} likes · [🔗 Link](<${url}>)\n\n`;
-  }
+    return `📅 Posted ${subDate} · <@${sub.userId}>\n👁️ ${fmtViews(sub.views || 0)} views · ❤️ ${fmtViews(sub.likes || 0)} likes · [🔗 Link](<${url}>)\n`;
+  });
 
-  return text;
+  const pages = [];
+  let current = header + meta;
+  for (const block of blocks) {
+    if ((current + block).length > 1800) {
+      pages.push(current);
+      current = block + '\n';
+    } else {
+      current += block + '\n';
+    }
+  }
+  if (current) pages.push(current);
+
+  return pages;
 }
 
 // ===== BUILD: CAMPAIGN STATUS =====
@@ -532,15 +544,18 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  if (interaction.isChatInputCommand() && interaction.commandName === 'stats') {
+ if (interaction.isChatInputCommand() && interaction.commandName === 'stats') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
     await interaction.deferReply({ ephemeral: true });
     try {
       const campaignValue = interaction.options.getString('campaign');
       const user = interaction.options.getUser('user');
-      const text = await buildStatsText(campaignValue, user?.id || null);
-      return interaction.editReply({ content: text });
+      const pages = await buildStatsText(campaignValue, user?.id || null);
+      await interaction.editReply({ content: pages[0] });
+      for (let i = 1; i < pages.length; i++) {
+        await interaction.followUp({ content: pages[i], ephemeral: true });
+      }
     } catch (err) {
       console.error('stats error:', err);
       return interaction.editReply({ content: '❌ Something went wrong.' });
