@@ -509,7 +509,6 @@ async function buildLeaderboardText(campaignValue) {
     if (i === 1) bonusNote = ` *(+${fmtUSD(campaign.bonus2nd)} bonus)*`;
     text += `${medal} <@${userId}> — ${fmtViews(totalViews)} views${bonusNote}\n`;
   }
-  text += `\n*Rankings update every 12 hours.*`;
   return text;
 }
 
