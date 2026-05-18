@@ -95,6 +95,9 @@ function buildPostLinks(subs) {
   return subs.map((s, i) => `[${i + 1}](<${normalizeUrl(s.link)}>)`).join(' ');
 }
 
+// In-memory cache for /stats pagination
+const statsPageCache = {};
+
 // ===== TIKTOK STATS =====
 async function extractVideoId(url) {
   const direct = url.match(/video\/(\d+)/);
@@ -123,7 +126,9 @@ async function fetchTikTokStats(videoId) {
     if (!item) return null;
     const views = item.stats?.playCount || item.statsV2?.playCount || 0;
     const likes = item.stats?.diggCount || item.statsV2?.diggCount || 0;
-    return { views: parseInt(views), likes: parseInt(likes) };
+    // createTime is a Unix timestamp of when the TikTok was actually posted
+    const createTime = item.createTime ? parseInt(item.createTime) : null;
+    return { views: parseInt(views), likes: parseInt(likes), createTime };
   } catch (err) {
     console.error('TikTok fetch error:', err.message);
     return null;
@@ -167,9 +172,20 @@ async function updateAllStats(force = false) {
       const stats = await fetchTikTokStats(videoId);
       if (!stats) continue;
       const earnings = calculateEarnings(stats.views, campaign);
+      const updateFields = {
+        views: stats.views,
+        likes: stats.likes,
+        earnings,
+        lastUpdated: new Date(),
+        videoId,
+      };
+      // Store actual TikTok post date if available
+      if (stats.createTime) {
+        updateFields.postedAt = new Date(stats.createTime * 1000);
+      }
       await db.collection('submissions').updateOne(
         { _id: sub._id },
-        { $set: { views: stats.views, likes: stats.likes, earnings, lastUpdated: new Date(), videoId } }
+        { $set: updateFields }
       );
       updated++;
     }
@@ -444,51 +460,78 @@ async function buildEarningsText(campaignValue) {
   return text;
 }
 
-// ===== BUILD: STATS — all posts sorted by date, each on its own line =====
-async function buildStatsText(campaignValue, filterUserId = null) {
+// ===== BUILD: STATS — sorted by actual TikTok post date, paginated =====
+async function buildStatsPages(campaignValue, filterUserId = null) {
   const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
   if (!campaign) return ['❌ Campaign not found.'];
 
   const query = { campaignValue, status: 'Approved ✅' };
   if (filterUserId) query.userId = filterUserId;
 
-  const approved = await db.collection('submissions')
-    .find(query)
-    .sort({ submittedAt: 1 })
-    .toArray();
+  const approved = await db.collection('submissions').find(query).toArray();
+
+  // Sort by actual TikTok post date (postedAt), fall back to submittedAt
+  approved.sort((a, b) => {
+    const aDate = a.postedAt || a.submittedAt;
+    const bDate = b.postedAt || b.submittedAt;
+    return new Date(aDate) - new Date(bDate);
+  });
 
   const isActive = new Date() < campaign.endDate;
   const lastRun = await db.collection('metadata').findOne({ key: 'lastStatsRun' });
   const lastRunAgo = lastRun ? timeAgo(lastRun.value) : null;
 
-  const header = filterUserId
+  const header = (filterUserId
     ? `📊 **${campaign.label} — <@${filterUserId}> Posts**\n`
-    : `📊 **${campaign.label} — All Posts**\n`;
-  const meta =
+    : `📊 **${campaign.label} — All Posts**\n`) +
     (isActive ? `🟢 Active\n` : `🔴 Campaign ended\n`) +
     `🕐 ${lastRunAgo ? `Updated ${lastRunAgo}` : 'Not updated yet'}\n\n`;
 
-  if (approved.length === 0) return [header + meta + '*No approved submissions yet.*'];
+  if (approved.length === 0) return [header + '*No approved submissions yet.*'];
 
+  // Build individual post blocks
   const blocks = approved.map(sub => {
-    const subDate = sub.submittedAt ? dateStr(sub.submittedAt) : 'Unknown';
+    // Use actual TikTok post date if available, otherwise submittedAt
+    const postDate = sub.postedAt
+      ? dateStr(sub.postedAt)
+      : sub.submittedAt
+        ? dateStr(sub.submittedAt)
+        : 'Unknown';
     const url = normalizeUrl(sub.link);
-    return `📅 Posted ${subDate} · <@${sub.userId}>\n👁️ ${fmtViews(sub.views || 0)} views · ❤️ ${fmtViews(sub.likes || 0)} likes · [🔗 Link](<${url}>)\n`;
+    return `📅 Posted ${postDate} · <@${sub.userId}>\n👁️ ${fmtViews(sub.views || 0)} views · ❤️ ${fmtViews(sub.likes || 0)} likes · [🔗 Link](<${url}>)\n`;
   });
 
+  // Split into pages max 1800 chars
   const pages = [];
-  let current = header + meta;
+  let current = header;
   for (const block of blocks) {
-    if ((current + block).length > 1800) {
+    if ((current + block + '\n').length > 1800) {
       pages.push(current);
       current = block + '\n';
     } else {
       current += block + '\n';
     }
   }
-  if (current) pages.push(current);
+  if (current.trim()) pages.push(current);
 
-  return pages;
+  // Add page numbers to each page
+  return pages.map((p, i) => pages.length > 1 ? p + `\nPage ${i + 1}/${pages.length}` : p);
+}
+
+// Returns the nav buttons row for stats pagination
+function statsNavButtons(currentPage, totalPages) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('stats_prev')
+      .setLabel('◀ Previous')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(currentPage === 0),
+    new ButtonBuilder()
+      .setCustomId('stats_next')
+      .setLabel('Next ▶')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(currentPage >= totalPages - 1),
+  );
 }
 
 // ===== BUILD: CAMPAIGN STATUS =====
@@ -544,18 +587,17 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
- if (interaction.isChatInputCommand() && interaction.commandName === 'stats') {
+  if (interaction.isChatInputCommand() && interaction.commandName === 'stats') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
     await interaction.deferReply({ ephemeral: true });
     try {
       const campaignValue = interaction.options.getString('campaign');
       const user = interaction.options.getUser('user');
-      const pages = await buildStatsText(campaignValue, user?.id || null);
-      await interaction.editReply({ content: pages[0] });
-      for (let i = 1; i < pages.length; i++) {
-        await interaction.followUp({ content: pages[i], ephemeral: true });
-      }
+      const pages = await buildStatsPages(campaignValue, user?.id || null);
+      statsPageCache[interaction.user.id] = { pages, currentPage: 0 };
+      const components = pages.length > 1 ? [statsNavButtons(0, pages.length)] : [];
+      return interaction.editReply({ content: pages[0], components });
     } catch (err) {
       console.error('stats error:', err);
       return interaction.editReply({ content: '❌ Something went wrong.' });
@@ -599,7 +641,7 @@ client.on('interactionCreate', async interaction => {
       });
 
       return interaction.editReply({
-        content: `✅ Added **${clipName}** for <@${user.id}> to **${campaign.label}** — Post #${counterDoc.count}\nRun \`/updatestats\` to fetch views now.`,
+        content: `✅ Added **${clipName}** for <@${user.id}> to **${campaign.label}** — Post #${counterDoc.count}\nRun \`/updatestats\` to fetch views and correct post date.`,
       });
     } catch (err) {
       console.error('addsubmission error:', err);
@@ -702,6 +744,22 @@ client.on('interactionCreate', async interaction => {
   }
 
   if (interaction.isButton()) {
+
+    // Stats pagination
+    if (interaction.customId === 'stats_prev' || interaction.customId === 'stats_next') {
+      await interaction.deferUpdate();
+      try {
+        const cache = statsPageCache[interaction.user.id];
+        if (!cache) return;
+        if (interaction.customId === 'stats_prev') cache.currentPage--;
+        else cache.currentPage++;
+        const { pages, currentPage } = cache;
+        const components = pages.length > 1 ? [statsNavButtons(currentPage, pages.length)] : [];
+        await interaction.editReply({ content: pages[currentPage], components });
+      } catch (err) {
+        console.error('stats pagination error:', err);
+      }
+    }
 
     if (interaction.customId === 'open_ticket') {
       await interaction.deferReply({ ephemeral: true });
