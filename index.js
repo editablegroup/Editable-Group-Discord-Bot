@@ -279,7 +279,10 @@ async function extractVideoId(url) {
   const direct = url.match(/video\/(\d+)/);
   if (direct) return direct[1];
   try {
-    const res = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: controller.signal });
+    clearTimeout(timeout);
     const match = res.url.match(/video\/(\d+)/);
     return match ? match[1] : null;
   } catch (err) {
