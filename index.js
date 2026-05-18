@@ -83,7 +83,7 @@ function fmtUSD(n) { return `$${(n || 0).toFixed(2)}`; }
 // Builds clickable numbered links: [1](url1) [2](url2) [3](url3)
 // Each number is a blue clickable link that opens the TikTok video
 function buildPostLinks(subs) {
-  return subs.map((s, i) => `[${i + 1}](${s.link})`).join(' ');
+  return subs.map((s, i) => `[${i + 1}](<${s.link}>)`).join(' ');
 }
 
 // ===== TIKTOK STATS =====
