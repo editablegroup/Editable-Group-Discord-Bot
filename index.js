@@ -33,6 +33,18 @@ function isOwner(userId) {
   return userId === OWNER_ID || userId === ROCA_ID;
 }
 
+function dateStr(d) {
+  const dt = new Date(d);
+  return `${String(dt.getDate()).padStart(2,'0')}/${String(dt.getMonth()+1).padStart(2,'0')}/${dt.getFullYear()}`;
+}
+
+// Ensures every TikTok link has https:// — fixes broken markdown links
+function normalizeUrl(url) {
+  if (!url) return '';
+  if (!url.startsWith('http://') && !url.startsWith('https://')) return 'https://' + url;
+  return url;
+}
+
 // ===== CAMPAIGNS =====
 const CAMPAIGNS = [
   {
@@ -80,10 +92,9 @@ function timeAgo(date) {
 function fmtViews(n) { return (n || 0).toLocaleString('en-US'); }
 function fmtUSD(n) { return `$${(n || 0).toFixed(2)}`; }
 
-// Builds clickable numbered links: [1](url1) [2](url2) [3](url3)
-// Each number is a blue clickable link that opens the TikTok video
+// Builds clickable numbered post links — normalizes URL so https:// is always present
 function buildPostLinks(subs) {
-  return subs.map((s, i) => `[${i + 1}](<${s.link}>)`).join(' ');
+  return subs.map((s, i) => `[${i + 1}](<${normalizeUrl(s.link)}>)`).join(' ');
 }
 
 // ===== TIKTOK STATS =====
@@ -198,6 +209,18 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName('stats')
+    .setDescription('Full stats with views + likes for a campaign — owner only')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption(opt =>
+      opt.setName('campaign').setDescription('Which campaign').setRequired(true)
+        .addChoices(...CAMPAIGNS.map(c => ({ name: c.label, value: c.value })))
+    )
+    .addUserOption(opt =>
+      opt.setName('user').setDescription('Filter to a specific editor').setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
     .setName('addsubmission')
     .setDescription('Manually add a past submission — owner only')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -271,6 +294,7 @@ async function buildMySubmissionsEmbed(userId) {
     const isApproved = sub.status === 'Approved ✅';
     const views = sub.views || 0;
     const earnings = sub.earnings;
+    const url = normalizeUrl(sub.link);
 
     description += `**${sub.campaignLabel}**\n`;
 
@@ -308,11 +332,11 @@ async function buildMySubmissionsEmbed(userId) {
       }
 
       const ago = timeAgo(sub.lastUpdated);
-      description += `└ [Watch on TikTok](${sub.link}) · 🕐 ${ago ? `Updated ${ago}` : 'Not updated yet — check back in 12 hours'}\n\n`;
+      description += `└ [Watch on TikTok](<${url}>) · 🕐 ${ago ? `Updated ${ago}` : 'Not updated yet — check back in 12 hours'}\n\n`;
     } else if (sub.status === 'Rejected ❌') {
-      description += `🔴 **${sub.clipName}** — Rejected · [View post](${sub.link})\n\n`;
+      description += `🔴 **${sub.clipName}** — Rejected · [View post](<${url}>)\n\n`;
     } else {
-      description += `⏳ **${sub.clipName}** — Pending review · [View post](${sub.link})\n\n`;
+      description += `⏳ **${sub.clipName}** — Pending review · [View post](<${url}>)\n\n`;
     }
   }
 
@@ -347,7 +371,6 @@ async function buildLeaderboardText(campaignValue) {
 
   if (approved.length === 0) { text += '*No approved submissions yet.*'; return text; }
 
-  // Combine views per user and collect their posts
   const userMap = {};
   for (const sub of approved) {
     if (!userMap[sub.userId]) userMap[sub.userId] = { views: 0, posts: [] };
@@ -382,7 +405,6 @@ async function buildEarningsText(campaignValue) {
   const isActive = new Date() < campaign.endDate;
   const endTs = Math.floor(campaign.endDate.getTime() / 1000);
 
-  // Combine per user
   const userMap = {};
   for (const sub of approved) {
     if (!userMap[sub.userId]) userMap[sub.userId] = { views: 0, earnings: 0, posts: [] };
@@ -424,6 +446,124 @@ async function buildEarningsText(campaignValue) {
   return text;
 }
 
+// ===== BUILD: STATS (owner) — by views, grouped per user =====
+async function buildStatsViews(campaignValue) {
+  const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
+  if (!campaign) return { text: '❌ Campaign not found.', button: null };
+
+  const approved = await db.collection('submissions')
+    .find({ campaignValue, status: 'Approved ✅' })
+    .toArray();
+
+  const isActive = new Date() < campaign.endDate;
+  const lastRun = await db.collection('metadata').findOne({ key: 'lastStatsRun' });
+  const lastRunAgo = lastRun ? timeAgo(lastRun.value) : null;
+
+  let text = `📊 **${campaign.label} — Full Stats**\n`;
+  text += isActive ? `🟢 Active\n` : `🔴 Campaign ended\n`;
+  text += `🕐 ${lastRunAgo ? `Updated ${lastRunAgo}` : 'Not updated yet'}\n\n`;
+
+  if (approved.length === 0) {
+    return { text: text + '*No approved submissions yet.*', button: null };
+  }
+
+  const userMap = {};
+  for (const sub of approved) {
+    if (!userMap[sub.userId]) userMap[sub.userId] = { views: 0, likes: 0, posts: [] };
+    userMap[sub.userId].views += sub.views || 0;
+    userMap[sub.userId].likes += sub.likes || 0;
+    userMap[sub.userId].posts.push(sub);
+  }
+  const sorted = Object.entries(userMap).sort((a, b) => b[1].views - a[1].views);
+
+  const medals = ['🥇', '🥈', '🥉'];
+  for (let i = 0; i < sorted.length; i++) {
+    const [userId, data] = sorted[i];
+    const medal = medals[i] || `${i + 1}.`;
+    const links = buildPostLinks(data.posts);
+    text += `${medal} <@${userId}> — ${fmtViews(data.views)} views | ${fmtViews(data.likes)} likes · ${links}\n`;
+  }
+
+  const button = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`stats_date_${campaignValue}`)
+      .setLabel('📅 Sort by Date')
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  return { text, button };
+}
+
+// ===== BUILD: STATS — by date, each post individually =====
+async function buildStatsDate(campaignValue) {
+  const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
+  if (!campaign) return { text: '❌ Campaign not found.', button: null };
+
+  const approved = await db.collection('submissions')
+    .find({ campaignValue, status: 'Approved ✅' })
+    .sort({ submittedAt: 1 })
+    .toArray();
+
+  const isActive = new Date() < campaign.endDate;
+  const lastRun = await db.collection('metadata').findOne({ key: 'lastStatsRun' });
+  const lastRunAgo = lastRun ? timeAgo(lastRun.value) : null;
+
+  let text = `📊 **${campaign.label} — By Date**\n`;
+  text += isActive ? `🟢 Active\n` : `🔴 Campaign ended\n`;
+  text += `🕐 ${lastRunAgo ? `Updated ${lastRunAgo}` : 'Not updated yet'}\n\n`;
+
+  if (approved.length === 0) {
+    return { text: text + '*No approved submissions yet.*', button: null };
+  }
+
+  for (let i = 0; i < approved.length; i++) {
+    const sub = approved[i];
+    const subDate = sub.submittedAt ? dateStr(sub.submittedAt) : 'Unknown';
+    const url = normalizeUrl(sub.link);
+    text += `${i + 1}. <@${sub.userId}> · ${subDate}\n`;
+    text += `   👁️ ${fmtViews(sub.views || 0)} views | ❤️ ${fmtViews(sub.likes || 0)} likes · [Watch](<${url}>)\n`;
+  }
+
+  const button = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`stats_views_${campaignValue}`)
+      .setLabel('📊 Sort by Views')
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  return { text, button };
+}
+
+// ===== BUILD: STATS — single user filter =====
+async function buildStatsUser(campaignValue, userId) {
+  const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
+  if (!campaign) return '❌ Campaign not found.';
+
+  const userSubs = await db.collection('submissions')
+    .find({ campaignValue, status: 'Approved ✅', userId })
+    .sort({ submittedAt: 1 })
+    .toArray();
+
+  if (userSubs.length === 0)
+    return `❌ No approved submissions for <@${userId}> in **${campaign.label}**.`;
+
+  const totalViews = userSubs.reduce((sum, s) => sum + (s.views || 0), 0);
+  const totalLikes = userSubs.reduce((sum, s) => sum + (s.likes || 0), 0);
+
+  let text = `📊 **<@${userId}> — ${campaign.label}**\n`;
+  text += `👁️ ${fmtViews(totalViews)} views total | ❤️ ${fmtViews(totalLikes)} likes total\n\n`;
+
+  for (let i = 0; i < userSubs.length; i++) {
+    const sub = userSubs[i];
+    const subDate = sub.submittedAt ? dateStr(sub.submittedAt) : 'Unknown';
+    const url = normalizeUrl(sub.link);
+    text += `**Post ${i + 1}** · ${subDate}\n`;
+    text += `👁️ ${fmtViews(sub.views || 0)} views | ❤️ ${fmtViews(sub.likes || 0)} likes · [Watch](<${url}>)\n\n`;
+  }
+
+  return text;
+}
+
 // ===== BUILD: CAMPAIGN STATUS =====
 function buildCampaignStatusText() {
   const now = new Date();
@@ -443,6 +583,7 @@ function buildCampaignStatusText() {
 // ===== INTERACTIONS =====
 client.on('interactionCreate', async interaction => {
 
+  // ── /mysubmissions ────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'mysubmissions') {
     await interaction.deferReply({ ephemeral: true });
     try {
@@ -455,6 +596,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /leaderboard ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'leaderboard') {
     await interaction.deferReply({ ephemeral: false });
     try {
@@ -465,6 +607,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /earnings ─────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'earnings') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -477,6 +620,32 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /stats ────────────────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'stats') {
+    if (!isOwner(interaction.user.id))
+      return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const campaignValue = interaction.options.getString('campaign');
+      const user = interaction.options.getUser('user');
+
+      if (user) {
+        const text = await buildStatsUser(campaignValue, user.id);
+        return interaction.editReply({ content: text });
+      } else {
+        const { text, button } = await buildStatsViews(campaignValue);
+        return interaction.editReply({
+          content: text,
+          components: button ? [button] : [],
+        });
+      }
+    } catch (err) {
+      console.error('stats error:', err);
+      return interaction.editReply({ content: '❌ Something went wrong.' });
+    }
+  }
+
+  // ── /addsubmission ────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'addsubmission') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -503,7 +672,7 @@ client.on('interactionCreate', async interaction => {
         campaignValue,
         campaignLabel: campaign.label,
         clipName,
-        link,
+        link: normalizeUrl(link),
         status: 'Approved ✅',
         campaignNumber: counterDoc.count,
         views: 0,
@@ -522,6 +691,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /removesubmission ─────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'removesubmission') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -540,6 +710,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /panel ────────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'panel') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -562,6 +733,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /submitpanel ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'submitpanel') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -595,6 +767,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /updatestats ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'updatestats') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -603,6 +776,7 @@ client.on('interactionCreate', async interaction => {
     return interaction.editReply({ content: '✅ Stats updated.' });
   }
 
+  // ── /close ────────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'close') {
     try {
       if (!interaction.channel.name.startsWith('ticket-'))
@@ -616,7 +790,32 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── BUTTONS ───────────────────────────────────────────────────────────────
   if (interaction.isButton()) {
+
+    // Stats sort by date button
+    if (interaction.customId.startsWith('stats_date_')) {
+      await interaction.deferUpdate();
+      try {
+        const campaignValue = interaction.customId.replace('stats_date_', '');
+        const { text, button } = await buildStatsDate(campaignValue);
+        await interaction.editReply({ content: text, components: button ? [button] : [] });
+      } catch (err) {
+        console.error('stats_date error:', err);
+      }
+    }
+
+    // Stats sort by views button
+    if (interaction.customId.startsWith('stats_views_')) {
+      await interaction.deferUpdate();
+      try {
+        const campaignValue = interaction.customId.replace('stats_views_', '');
+        const { text, button } = await buildStatsViews(campaignValue);
+        await interaction.editReply({ content: text, components: button ? [button] : [] });
+      } catch (err) {
+        console.error('stats_views error:', err);
+      }
+    }
 
     if (interaction.customId === 'open_ticket') {
       await interaction.deferReply({ ephemeral: true });
@@ -718,7 +917,7 @@ client.on('interactionCreate', async interaction => {
         await interaction.message.edit({
           content:
             `📩 ${sub.campaignLabel} — Post #${sub.campaignNumber}\n` +
-            `👤 <@${sub.userId}>\n🎬 ${sub.clipName}\n🔗 <${sub.link}>\n📊 Status: ${newStatus}`,
+            `👤 <@${sub.userId}>\n🎬 ${sub.clipName}\n🔗 <${normalizeUrl(sub.link)}>\n📊 Status: ${newStatus}`,
           components: [],
         });
         try {
@@ -732,7 +931,7 @@ client.on('interactionCreate', async interaction => {
             .addFields(
               { name: '🎯 Campaign', value: sub.campaignLabel, inline: true },
               { name: '🎬 Edit', value: sub.clipName, inline: true },
-              { name: '🔗 Link', value: sub.link, inline: false }
+              { name: '🔗 Link', value: normalizeUrl(sub.link), inline: false }
             )
             .setTimestamp();
           await user.send({ embeds: [embed] });
@@ -743,6 +942,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── SELECT MENUS ──────────────────────────────────────────────────────────
   if (interaction.isStringSelectMenu()) {
 
     if (interaction.customId === 'campaign_select') {
@@ -778,11 +978,12 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── MODAL SUBMIT ──────────────────────────────────────────────────────────
   if (interaction.isModalSubmit() && interaction.customId === 'submit_modal') {
     await interaction.deferReply({ ephemeral: true });
     try {
       const clipName = interaction.fields.getTextInputValue('clip_name') || 'Untitled';
-      const clipLink = interaction.fields.getTextInputValue('clip_link').trim();
+      const clipLink = normalizeUrl(interaction.fields.getTextInputValue('clip_link').trim());
       const campaignInfo = pendingCampaign[interaction.user.id];
       delete pendingCampaign[interaction.user.id];
 
