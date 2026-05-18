@@ -45,8 +45,8 @@ function dateStr(d) {
 }
 
 // ===== CAMPAIGNS =====
-// sheetId: set to null to have the bot auto-create a new sheet for that campaign.
-// Once created, the sheet ID is stored in MongoDB — you don't need to add it back here.
+// sheetId: null = bot auto-creates a new sheet on first /updatestats run.
+// Once created the ID is stored in MongoDB — no need to add it back here.
 const CAMPAIGNS = [
   {
     label: 'Alter Ego - Doechii Ft. JT',
@@ -58,7 +58,7 @@ const CAMPAIGNS = [
     bonus1st: 150,
     bonus2nd: 75,
     endDate: new Date('2026-05-20T23:59:59Z'),
-    sheetId: null, // set to null = bot creates a fresh sheet on next /updatestats
+    sheetId: null,
   },
   {
     label: 'SHAKE THAT - JIG LeFrost',
@@ -100,7 +100,6 @@ function extractVideoIdFromUrl(url) {
   return match ? match[1] : null;
 }
 
-// Gets the server nickname of a user, falls back to their username
 async function getServerNickname(userId) {
   try {
     const guild = client.guilds.cache.get(GUILD_ID);
@@ -124,120 +123,66 @@ function getGoogleAuth() {
   });
 }
 
-// Returns the sheet ID for a campaign.
+// Returns sheet ID for a campaign.
 // Priority: hardcoded sheetId in CAMPAIGNS → stored in MongoDB → create new sheet.
 async function getOrCreateSheet(campaignValue, campaignLabel) {
-  // Check if hardcoded in CAMPAIGNS
   const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
   if (campaign && campaign.sheetId) return campaign.sheetId;
 
-  // Check MongoDB for a previously auto-created sheet
   const stored = await db.collection('campaigns').findOne({ value: campaignValue });
   if (stored && stored.sheetId) return stored.sheetId;
 
-  // Create a brand new sheet
   console.log(`[Sheets] Creating new sheet for "${campaignLabel}"...`);
   const auth = getGoogleAuth();
   const sheets = google.sheets({ version: 'v4', auth });
   const drive = google.drive({ version: 'v3', auth });
 
+  // Create plain spreadsheet — no formatting (avoids permission issues)
   const spreadsheet = await sheets.spreadsheets.create({
-    requestBody: {
-      properties: { title: `Editable Group — ${campaignLabel}` },
-      sheets: [{ properties: { title: 'Submissions', gridProperties: { rowCount: 1000, columnCount: 7 } } }],
-    },
+    requestBody: { properties: { title: `Editable Group — ${campaignLabel}` } },
   });
-
   const sheetId = spreadsheet.data.spreadsheetId;
-  const gid = spreadsheet.data.sheets[0].properties.sheetId;
 
-  // Apply formatting
-  await sheets.spreadsheets.batchUpdate({
+  // Write header row (row 1). Column G is hidden videoId for internal matching.
+  await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    requestBody: {
-      requests: [
-        // Merge A1:G1 for banner
-        { mergeCells: { range: { sheetId: gid, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 7 }, mergeType: 'MERGE_ALL' } },
-        // Blue background + white bold text for banner row
-        {
-          repeatCell: {
-            range: { sheetId: gid, startRowIndex: 0, endRowIndex: 1 },
-            cell: { userEnteredFormat: { backgroundColor: { red: 0.204, green: 0.467, blue: 0.890 }, textFormat: { bold: true, fontSize: 20, foregroundColor: { red: 1, green: 1, blue: 1 } }, horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE' } },
-            fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)',
-          },
-        },
-        // Banner row height
-        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'ROWS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 80 }, fields: 'pixelSize' } },
-        // Header row formatting
-        {
-          repeatCell: {
-            range: { sheetId: gid, startRowIndex: 1, endRowIndex: 2 },
-            cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.93, green: 0.93, blue: 0.93 } } },
-            fields: 'userEnteredFormat(textFormat,backgroundColor)',
-          },
-        },
-        // Column widths
-        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 130 }, fields: 'pixelSize' } },
-        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 1, endIndex: 2 }, properties: { pixelSize: 100 }, fields: 'pixelSize' } },
-        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 2, endIndex: 3 }, properties: { pixelSize: 320 }, fields: 'pixelSize' } },
-        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 3, endIndex: 4 }, properties: { pixelSize: 140 }, fields: 'pixelSize' } },
-        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 4, endIndex: 5 }, properties: { pixelSize: 140 }, fields: 'pixelSize' } },
-        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 5, endIndex: 6 }, properties: { pixelSize: 140 }, fields: 'pixelSize' } },
-        // Hide column G (videoId — used internally for row matching)
-        { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: 6, endIndex: 7 }, properties: { hiddenByUser: true, pixelSize: 0 }, fields: 'hiddenByUser,pixelSize' } },
-      ],
-    },
+    range: 'Sheet1!A1:G1',
+    valueInputOption: 'RAW',
+    requestBody: { values: [['Creator', 'Date', 'Video Link', 'Views', 'Likes', 'Last Updated', 'videoId']] },
   });
 
-  // Banner text + headers with live SUM formulas
-  await sheets.spreadsheets.values.batchUpdate({
-    spreadsheetId: sheetId,
-    requestBody: {
-      valueInputOption: 'USER_ENTERED',
-      data: [
-        { range: 'Submissions!A1', values: [['EDITABLE GROUP']] },
-        {
-          range: 'Submissions!A2:G2',
-          values: [[
-            '👤 Creator',
-            '📅 Date',
-            '🔗 Video Link',
-            '=CONCAT("👁️ Views - ",TEXT(SUM(D3:D1000),"#,##0"))',
-            '=CONCAT("❤️ Likes - ",TEXT(SUM(E3:E1000),"#,##0"))',
-            `🕐 Last Updated: ${todayStr()}`,
-            'videoId',
-          ]],
-        },
-      ],
-    },
-  });
-
-  // Move to Drive folder
+  // Move into the shared Drive folder
   const file = await drive.files.get({ fileId: sheetId, fields: 'parents' });
   const previousParents = (file.data.parents || []).join(',');
-  await drive.files.update({ fileId: sheetId, addParents: DRIVE_FOLDER_ID, removeParents: previousParents, fields: 'id, parents' });
+  await drive.files.update({
+    fileId: sheetId,
+    addParents: DRIVE_FOLDER_ID,
+    removeParents: previousParents,
+    fields: 'id, parents',
+  });
 
-  // Share with official email
+  // Share with official email as editor
   await drive.permissions.create({
     fileId: sheetId,
     requestBody: { role: 'writer', type: 'user', emailAddress: OFFICIAL_EMAIL },
     sendNotificationEmail: false,
   });
 
-  // Save sheet ID in MongoDB
+  // Save to MongoDB so it's never recreated
   await db.collection('campaigns').updateOne(
     { value: campaignValue },
     { $set: { value: campaignValue, label: campaignLabel, sheetId } },
     { upsert: true }
   );
 
-  console.log(`[Sheets] Created sheet for "${campaignLabel}" — ID: ${sheetId}`);
+  console.log(`[Sheets] Created — ID: ${sheetId}`);
   return sheetId;
 }
 
-// Updates a row in the sheet. Matches by video ID in hidden column G — 100% reliable.
-// Writes: A (nickname, if empty), B (date, if empty), C (link, if new row), D (views), E (likes), G (videoId).
-// F is only written to in the header (updateSheetTimestamp) — never per row.
+// Updates a row in the sheet.
+// Matches by video ID in column G (hidden) — 100% reliable.
+// Writes: A (nickname if empty), B (date if empty), C (link if new), D (views), E (likes), G (videoId).
+// F header is updated once per stats run via updateSheetTimestamp — never per row.
 async function updateSheetRow(submission) {
   try {
     const campaign = CAMPAIGNS.find(c => c.value === submission.campaignValue);
@@ -247,22 +192,26 @@ async function updateSheetRow(submission) {
     const auth = getGoogleAuth();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'A:G' });
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: 'Sheet1!A:G',
+    });
+
     const rows = res.data.values || [];
     const subVideoId = submission.videoId || extractVideoIdFromUrl(submission.link);
 
     let rowIndex = -1;
 
-    // Primary match: column G (hidden videoId column) — never fails
+    // Primary: match by column G (videoId)
     if (subVideoId) {
-      for (let i = 2; i < rows.length; i++) {
+      for (let i = 1; i < rows.length; i++) {
         if ((rows[i][6] || '').trim() === subVideoId) { rowIndex = i + 1; break; }
       }
     }
 
     // Fallback: match by link in column C
     if (rowIndex < 0) {
-      for (let i = 2; i < rows.length; i++) {
+      for (let i = 1; i < rows.length; i++) {
         const cellLink = (rows[i][2] || '').trim();
         if (!cellLink) continue;
         if (cellLink === (submission.link || '').trim()) { rowIndex = i + 1; break; }
@@ -273,26 +222,23 @@ async function updateSheetRow(submission) {
     const updates = [];
 
     if (rowIndex > 0) {
-      // Existing row — update D (views), E (likes), G (videoId)
-      // Only overwrite A (nickname) if currently empty
       const existingNickname = (rows[rowIndex - 1]?.[0] || '').trim();
       if (submission.nickname && !existingNickname)
-        updates.push({ range: `A${rowIndex}`, values: [[submission.nickname]] });
-      updates.push({ range: `D${rowIndex}:E${rowIndex}`, values: [[submission.views || 0, submission.likes || 0]] });
+        updates.push({ range: `Sheet1!A${rowIndex}`, values: [[submission.nickname]] });
+      updates.push({ range: `Sheet1!D${rowIndex}:E${rowIndex}`, values: [[submission.views || 0, submission.likes || 0]] });
       if (subVideoId)
-        updates.push({ range: `G${rowIndex}`, values: [[subVideoId]] });
+        updates.push({ range: `Sheet1!G${rowIndex}`, values: [[subVideoId]] });
     } else {
-      // New row — append starting from row 3
-      const nextRow = Math.max(rows.length + 1, 3);
+      const nextRow = Math.max(rows.length + 1, 2);
       updates.push({
-        range: `A${nextRow}:G${nextRow}`,
+        range: `Sheet1!A${nextRow}:G${nextRow}`,
         values: [[
           submission.nickname || '',
           submission.dateSubmitted || todayStr(),
           submission.link || '',
           submission.views || 0,
           submission.likes || 0,
-          '',           // F — left empty per row (header has last updated)
+          '',
           subVideoId || '',
         ]],
       });
@@ -309,7 +255,7 @@ async function updateSheetRow(submission) {
   }
 }
 
-// Writes "🕐 Last Updated: DD/MM/YYYY" once to the F2 header cell
+// Writes "Last Updated: DD/MM/YYYY" once to the F1 header cell
 async function updateSheetTimestamp(campaignValue) {
   try {
     const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
@@ -319,12 +265,12 @@ async function updateSheetTimestamp(campaignValue) {
     const sheets = google.sheets({ version: 'v4', auth });
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
-      range: 'F2',
+      range: 'Sheet1!F1',
       valueInputOption: 'RAW',
-      requestBody: { values: [[`🕐 Last Updated: ${todayStr()}`]] },
+      requestBody: { values: [[`Last Updated: ${todayStr()}`]] },
     });
   } catch (err) {
-    console.error('Sheet timestamp update error:', err.message);
+    console.error('Sheet timestamp error:', err.message);
   }
 }
 
@@ -413,7 +359,6 @@ async function updateAllStats(force = false) {
         { $set: { views: stats.views, likes: stats.likes, earnings, lastUpdated: new Date(), videoId } }
       );
 
-      // Get server nickname for sheet
       const nickname = await getServerNickname(sub.userId);
 
       await updateSheetRow({
@@ -429,7 +374,6 @@ async function updateAllStats(force = false) {
       updated++;
     }
 
-    // Update F2 timestamp once per campaign
     for (const campaignValue of updatedCampaigns) {
       await updateSheetTimestamp(campaignValue);
     }
@@ -686,7 +630,6 @@ async function buildEarningsText(campaignValue) {
     text += line + '\n';
   }
 
-  text += `\n*Updates every 12 hours.*`;
   return text;
 }
 
