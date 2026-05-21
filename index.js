@@ -79,7 +79,7 @@ const CAMPAIGNS = [
     budget: 1075,    // $1,300 total - $225 bonuses = $1,075 RPM pool
     bonus1st: 150,
     bonus2nd: 75,
-    endDate: new Date('2026-05-31T23:59:59Z'), // update this when you know the end date
+    endDate: new Date('2026-06-01T03:59:59Z'), // update this when you know the end date
     roleId: '1506777268754579506',
     announcementChannelId: '1506777667020521472',
     offerChannelId: '1506778321969746092',
