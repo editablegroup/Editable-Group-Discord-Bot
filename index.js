@@ -32,12 +32,10 @@ const TWELVE_HOURS = 12 * 60 * 60 * 1000;
 function isOwner(userId) {
   return userId === OWNER_ID || userId === ROCA_ID;
 }
-
 function dateStr(d) {
   const dt = new Date(d);
   return `${String(dt.getDate()).padStart(2,'0')}/${String(dt.getMonth()+1).padStart(2,'0')}/${dt.getFullYear()}`;
 }
-
 function normalizeUrl(url) {
   if (!url) return '';
   if (!url.startsWith('http://') && !url.startsWith('https://')) return 'https://' + url;
@@ -45,6 +43,10 @@ function normalizeUrl(url) {
 }
 
 // ===== CAMPAIGNS =====
+// budget = RPM payout pool only (bonuses are separate and shown on top)
+// roleId = Discord role given when editor joins campaign
+// announcementChannelId = channel the "Start Earning" button links to
+// offerChannelId = channel where /campaignoffer posts the offer message
 const CAMPAIGNS = [
   {
     label: 'Alter Ego - Doechii Ft. JT',
@@ -68,7 +70,22 @@ const CAMPAIGNS = [
     bonus2nd: 50,
     endDate: new Date('2026-05-24T23:59:59Z'),
   },
-  // { label: 'Campaign Name', value: 'campaign_value', rpm: 1.00, maxPayout: 350, minViews: 1500, budget: 1000, bonus1st: 150, bonus2nd: 75, endDate: new Date('2026-06-01T23:59:59Z') },
+  {
+    label: 'Fuëgo - BNYX®, Yeat & Peso Pluma',
+    value: 'fuego_bnyx',
+    rpm: 1.25,
+    maxPayout: 400,
+    minViews: 1500,
+    budget: 1075,    // $1,300 total - $225 bonuses = $1,075 RPM pool
+    bonus1st: 150,
+    bonus2nd: 75,
+    endDate: new Date('2026-05-31T23:59:59Z'), // update this when you know the end date
+    roleId: '1506777268754579506',
+    announcementChannelId: '1506777667020521472',
+    offerChannelId: '1506778321969746092',
+    brief: 'Popular TV shows, movies, thirst traps, and Latina characters — think Maddie Perez from Euphoria. Keep it cinematic, trending and visually striking.',
+  },
+  // { label: 'Campaign Name', value: 'campaign_value', rpm: 1.00, maxPayout: 350, minViews: 1500, budget: 1000, bonus1st: 150, bonus2nd: 75, endDate: new Date('2026-06-01T23:59:59Z'), roleId: 'ROLE_ID', announcementChannelId: 'CHANNEL_ID', offerChannelId: 'CHANNEL_ID', brief: 'Brief here.' },
 ];
 
 // ===== MONGODB =====
@@ -90,7 +107,6 @@ function timeAgo(date) {
 }
 function fmtViews(n) { return (n || 0).toLocaleString('en-US'); }
 function fmtUSD(n) { return `$${(n || 0).toFixed(2)}`; }
-
 function buildPostLinks(subs) {
   return subs.map((s, i) => `[${i + 1}](<${normalizeUrl(s.link)}>)`).join(' ');
 }
@@ -126,7 +142,6 @@ async function fetchTikTokStats(videoId) {
     if (!item) return null;
     const views = item.stats?.playCount || item.statsV2?.playCount || 0;
     const likes = item.stats?.diggCount || item.statsV2?.diggCount || 0;
-    // createTime is a Unix timestamp of when the TikTok was actually posted
     const createTime = item.createTime ? parseInt(item.createTime) : null;
     return { views: parseInt(views), likes: parseInt(likes), createTime };
   } catch (err) {
@@ -172,21 +187,9 @@ async function updateAllStats(force = false) {
       const stats = await fetchTikTokStats(videoId);
       if (!stats) continue;
       const earnings = calculateEarnings(stats.views, campaign);
-      const updateFields = {
-        views: stats.views,
-        likes: stats.likes,
-        earnings,
-        lastUpdated: new Date(),
-        videoId,
-      };
-      // Store actual TikTok post date if available
-      if (stats.createTime) {
-        updateFields.postedAt = new Date(stats.createTime * 1000);
-      }
-      await db.collection('submissions').updateOne(
-        { _id: sub._id },
-        { $set: updateFields }
-      );
+      const updateFields = { views: stats.views, likes: stats.likes, earnings, lastUpdated: new Date(), videoId };
+      if (stats.createTime) updateFields.postedAt = new Date(stats.createTime * 1000);
+      await db.collection('submissions').updateOne({ _id: sub._id }, { $set: updateFields });
       updated++;
     }
     console.log(`[Stats] Updated ${updated}/${approved.length} submissions`);
@@ -232,6 +235,15 @@ const commands = [
     )
     .addUserOption(opt =>
       opt.setName('user').setDescription('Filter to a specific editor').setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('campaignoffer')
+    .setDescription('Post a campaign offer message — owner only')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption(opt =>
+      opt.setName('campaign').setDescription('Which campaign to post the offer for').setRequired(true)
+        .addChoices(...CAMPAIGNS.filter(c => c.offerChannelId).map(c => ({ name: c.label, value: c.value })))
     ),
 
   new SlashCommandBuilder()
@@ -460,7 +472,7 @@ async function buildEarningsText(campaignValue) {
   return text;
 }
 
-// ===== BUILD: STATS — sorted by actual TikTok post date, paginated =====
+// ===== BUILD: STATS (paginated, sorted by actual post date) =====
 async function buildStatsPages(campaignValue, filterUserId = null) {
   const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
   if (!campaign) return ['❌ Campaign not found.'];
@@ -470,7 +482,6 @@ async function buildStatsPages(campaignValue, filterUserId = null) {
 
   const approved = await db.collection('submissions').find(query).toArray();
 
-  // Sort by actual TikTok post date (postedAt), fall back to submittedAt
   approved.sort((a, b) => {
     const aDate = a.postedAt || a.submittedAt;
     const bDate = b.postedAt || b.submittedAt;
@@ -489,19 +500,12 @@ async function buildStatsPages(campaignValue, filterUserId = null) {
 
   if (approved.length === 0) return [header + '*No approved submissions yet.*'];
 
-  // Build individual post blocks
   const blocks = approved.map(sub => {
-    // Use actual TikTok post date if available, otherwise submittedAt
-    const postDate = sub.postedAt
-      ? dateStr(sub.postedAt)
-      : sub.submittedAt
-        ? dateStr(sub.submittedAt)
-        : 'Unknown';
+    const postDate = sub.postedAt ? dateStr(sub.postedAt) : sub.submittedAt ? dateStr(sub.submittedAt) : 'Unknown';
     const url = normalizeUrl(sub.link);
     return `📅 Posted ${postDate} · <@${sub.userId}>\n👁️ ${fmtViews(sub.views || 0)} views · ❤️ ${fmtViews(sub.likes || 0)} likes · [🔗 Link](<${url}>)\n`;
   });
 
-  // Split into pages max 1800 chars
   const pages = [];
   let current = header;
   for (const block of blocks) {
@@ -514,23 +518,13 @@ async function buildStatsPages(campaignValue, filterUserId = null) {
   }
   if (current.trim()) pages.push(current);
 
-  // Add page numbers to each page
   return pages.map((p, i) => pages.length > 1 ? p + `\nPage ${i + 1}/${pages.length}` : p);
 }
 
-// Returns the nav buttons row for stats pagination
 function statsNavButtons(currentPage, totalPages) {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('stats_prev')
-      .setLabel('◀ Previous')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(currentPage === 0),
-    new ButtonBuilder()
-      .setCustomId('stats_next')
-      .setLabel('Next ▶')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(currentPage >= totalPages - 1),
+    new ButtonBuilder().setCustomId('stats_prev').setLabel('◀ Previous').setStyle(ButtonStyle.Secondary).setDisabled(currentPage === 0),
+    new ButtonBuilder().setCustomId('stats_next').setLabel('Next ▶').setStyle(ButtonStyle.Secondary).setDisabled(currentPage >= totalPages - 1),
   );
 }
 
@@ -553,6 +547,7 @@ function buildCampaignStatusText() {
 // ===== INTERACTIONS =====
 client.on('interactionCreate', async interaction => {
 
+  // ── /mysubmissions ────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'mysubmissions') {
     await interaction.deferReply({ ephemeral: true });
     try {
@@ -565,6 +560,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /leaderboard ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'leaderboard') {
     await interaction.deferReply({ ephemeral: false });
     try {
@@ -575,6 +571,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /earnings ─────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'earnings') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -587,6 +584,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /stats ────────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'stats') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -604,6 +602,54 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /campaignoffer ────────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'campaignoffer') {
+    if (!isOwner(interaction.user.id))
+      return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
+    try {
+      const campaignValue = interaction.options.getString('campaign');
+      const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
+      if (!campaign || !campaign.offerChannelId)
+        return interaction.reply({ content: '❌ This campaign has no offer channel configured.', ephemeral: true });
+
+      const endTs = Math.floor(campaign.endDate.getTime() / 1000);
+      const offerChannel = await client.channels.fetch(campaign.offerChannelId);
+
+      const embed = new EmbedBuilder()
+        .setColor(0x2b2d31)
+        .setTitle(`🎬 ${campaign.label}`)
+        .addFields(
+          { name: '📋 Campaign Info', value:
+            `💰 RPM: ${fmtUSD(campaign.rpm)} per 1,000 views\n` +
+            `🏆 Max payout per edit: ${fmtUSD(campaign.maxPayout)}\n` +
+            `💵 Total budget: ${fmtUSD(campaign.budget + campaign.bonus1st + campaign.bonus2nd)}\n` +
+            `🎁 Bonuses: 🥇 ${fmtUSD(campaign.bonus1st)} · 🥈 ${fmtUSD(campaign.bonus2nd)}\n` +
+            `📈 Min. views to earn: ${campaign.minViews.toLocaleString()}\n` +
+            `📅 End date: <t:${endTs}:D>`
+          },
+          { name: '📝 Brief', value: campaign.brief || 'No brief provided.' },
+          { name: '\u200b', value: '👇 **JOIN BELOW TO START EARNING NOW!**' },
+        );
+
+      await offerChannel.send({
+        embeds: [embed],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`join_campaign_${campaignValue}`)
+            .setLabel('🎯 Join Campaign')
+            .setStyle(ButtonStyle.Success)
+        )],
+      });
+
+      return interaction.reply({ content: `✅ Offer posted in <#${campaign.offerChannelId}>`, ephemeral: true });
+    } catch (err) {
+      console.error('campaignoffer error:', err);
+      if (!interaction.replied && !interaction.deferred)
+        await interaction.reply({ content: '❌ Something went wrong.', ephemeral: true }).catch(() => {});
+    }
+  }
+
+  // ── /addsubmission ────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'addsubmission') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -649,6 +695,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /removesubmission ─────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'removesubmission') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -658,15 +705,14 @@ client.on('interactionCreate', async interaction => {
       const sub = await db.collection('submissions').findOne({ link });
       if (!sub) return interaction.editReply({ content: '❌ No submission found with that link.' });
       await db.collection('submissions').deleteOne({ link });
-      return interaction.editReply({
-        content: `✅ Removed submission by <@${sub.userId}> from **${sub.campaignLabel}**\n🔗 ${link}`,
-      });
+      return interaction.editReply({ content: `✅ Removed submission by <@${sub.userId}> from **${sub.campaignLabel}**\n🔗 ${link}` });
     } catch (err) {
       console.error('removesubmission error:', err);
       return interaction.editReply({ content: '❌ Something went wrong.' });
     }
   }
 
+  // ── /panel ────────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'panel') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -689,6 +735,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /submitpanel ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'submitpanel') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -722,6 +769,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /updatestats ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'updatestats') {
     if (!isOwner(interaction.user.id))
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
@@ -730,6 +778,7 @@ client.on('interactionCreate', async interaction => {
     return interaction.editReply({ content: '✅ Stats updated.' });
   }
 
+  // ── /close ────────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'close') {
     try {
       if (!interaction.channel.name.startsWith('ticket-'))
@@ -743,6 +792,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── BUTTONS ───────────────────────────────────────────────────────────────
   if (interaction.isButton()) {
 
     // Stats pagination
@@ -758,6 +808,45 @@ client.on('interactionCreate', async interaction => {
         await interaction.editReply({ content: pages[currentPage], components });
       } catch (err) {
         console.error('stats pagination error:', err);
+      }
+    }
+
+    // Join campaign button
+    if (interaction.customId.startsWith('join_campaign_')) {
+      try {
+        const campaignValue = interaction.customId.replace('join_campaign_', '');
+        const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
+        if (!campaign || !campaign.roleId)
+          return interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
+
+        const member = await interaction.guild.members.fetch(interaction.user.id);
+
+        // Check if already joined
+        if (member.roles.cache.has(campaign.roleId)) {
+          return interaction.reply({
+            content: `✅ You're already in this campaign! Head over to <#${campaign.announcementChannelId}> to get started.`,
+            ephemeral: true,
+          });
+        }
+
+        // Give the role
+        await member.roles.add(campaign.roleId);
+
+        // Reply with "Start Earning" link button
+        await interaction.reply({
+          content: `✅ You've successfully joined **${campaign.label}**! Before you begin posting, make sure to check out the rules, brief and audios! Start earning by clicking below.`,
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setLabel('🎬 Start Earning')
+              .setStyle(ButtonStyle.Link)
+              .setURL(`https://discord.com/channels/${GUILD_ID}/${campaign.announcementChannelId}`)
+          )],
+          ephemeral: true,
+        });
+      } catch (err) {
+        console.error('join_campaign error:', err);
+        if (!interaction.replied && !interaction.deferred)
+          await interaction.reply({ content: '❌ Something went wrong. Please try again.', ephemeral: true }).catch(() => {});
       }
     }
 
@@ -886,6 +975,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── SELECT MENUS ──────────────────────────────────────────────────────────
   if (interaction.isStringSelectMenu()) {
 
     if (interaction.customId === 'campaign_select') {
@@ -921,6 +1011,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── MODAL SUBMIT ──────────────────────────────────────────────────────────
   if (interaction.isModalSubmit() && interaction.customId === 'submit_modal') {
     await interaction.deferReply({ ephemeral: true });
     try {
