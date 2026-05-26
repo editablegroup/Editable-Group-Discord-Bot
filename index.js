@@ -29,11 +29,10 @@ const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const RAPIDAPI_HOST = 'tiktok-api23.p.rapidapi.com';
 const TWELVE_HOURS = 12 * 60 * 60 * 1000;
 
-// Onboarding
 const ONBOARDING_CHANNEL_ID = '1508909360510795837';
 const LOG_CHANNEL_ID = '1505978732010274846';
 const EDITOR_ROLE_ID = '1437195425819131915';
-const ACTIVE_CAMPAIGNS_CHANNEL_ID = '1506772811556061324';
+const ACTIVE_CAMPAIGNS_CHANNEL_ID = '1506778321969746092';
 
 function isOwner(userId) {
   return userId === OWNER_ID || userId === ROCA_ID;
@@ -81,7 +80,7 @@ const CAMPAIGNS = [
     budget: 1075,
     bonus1st: 150,
     bonus2nd: 75,
-    endDate: new Date('2026-06-01T03:59:59Z'), // 11:59 PM ET May 31st
+    endDate: new Date('2026-06-01T03:59:59Z'),
     roleId: '1506777268754579506',
     announcementChannelId: '1506777667020521472',
     offerChannelId: '1506778321969746092',
@@ -113,9 +112,8 @@ function buildPostLinks(subs) {
   return subs.map((s, i) => `[${i + 1}](<${normalizeUrl(s.link)}>)`).join(' ');
 }
 
-// In-memory stores
 const statsPageCache = {};
-const onboardingState = {}; // userId -> { tiktok, payment, paypalEmail, welcomeMessageId }
+const onboardingState = {};
 
 // ===== TIKTOK STATS =====
 async function extractVideoId(url) {
@@ -284,6 +282,11 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
+    .setName('onboardingpanel')
+    .setDescription('Post the onboarding panel in #onboarding — owner only')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+  new SlashCommandBuilder()
     .setName('close')
     .setDescription('Close a ticket'),
 
@@ -307,15 +310,19 @@ client.once('ready', () => {
   setInterval(() => updateAllStats(false), TWELVE_HOURS);
 });
 
-// ===== NEW MEMBER — post welcome message in #onboarding =====
+// ===== NEW MEMBER =====
 client.on('guildMemberAdd', async member => {
   try {
     const channel = await client.channels.fetch(ONBOARDING_CHANNEL_ID);
     const msg = await channel.send({
-      const msg = await channel.send({
       content: `👋 Welcome! Please complete the onboarding below to get access to the server.`,
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('start_onboarding')
+          .setLabel('🚀 Start Onboarding')
+          .setStyle(ButtonStyle.Primary)
+      )],
     });
-    // Store welcome message ID so we can delete it on completion
     onboardingState[member.id] = { welcomeMessageId: msg.id };
   } catch (err) {
     console.error('guildMemberAdd error:', err.message);
@@ -635,7 +642,6 @@ client.on('interactionCreate', async interaction => {
       if (!campaign || !campaign.offerChannelId)
         return interaction.reply({ content: '❌ This campaign has no offer channel configured.', ephemeral: true });
 
-      const endTs = Math.floor(campaign.endDate.getTime() / 1000);
       const offerChannel = await client.channels.fetch(campaign.offerChannelId);
 
       const embed = new EmbedBuilder()
@@ -793,6 +799,29 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /onboardingpanel ──────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'onboardingpanel') {
+    if (!isOwner(interaction.user.id))
+      return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
+    try {
+      const channel = await client.channels.fetch(ONBOARDING_CHANNEL_ID);
+      await channel.send({
+        content: `👋 Welcome! Please complete the onboarding below to get access to the server.`,
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('start_onboarding')
+            .setLabel('🚀 Start Onboarding')
+            .setStyle(ButtonStyle.Primary)
+        )],
+      });
+      return interaction.reply({ content: '✅ Onboarding panel posted.', ephemeral: true });
+    } catch (err) {
+      console.error('onboardingpanel error:', err);
+      if (!interaction.replied && !interaction.deferred)
+        await interaction.reply({ content: '❌ Something went wrong.', ephemeral: true }).catch(() => {});
+    }
+  }
+
   // ── /updatestats ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'updatestats') {
     if (!isOwner(interaction.user.id))
@@ -819,7 +848,7 @@ client.on('interactionCreate', async interaction => {
   // ── BUTTONS ───────────────────────────────────────────────────────────────
   if (interaction.isButton()) {
 
-    // ── Stats pagination ──
+    // Stats pagination
     if (interaction.customId === 'stats_prev' || interaction.customId === 'stats_next') {
       await interaction.deferUpdate();
       try {
@@ -835,14 +864,13 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // ── Start Onboarding ──
+    // Start Onboarding
     if (interaction.customId === 'start_onboarding') {
       try {
         const member = await interaction.guild.members.fetch(interaction.user.id);
-        if (member.roles.cache.has(EDITOR_ROLE_ID)) {
-          return interaction.reply({ content: '✅ You\'ve already completed onboarding! Welcome back.', ephemeral: true });
-        }
-        // Initialize state if not already set
+        if (member.roles.cache.has(EDITOR_ROLE_ID))
+          return interaction.reply({ content: '✅ You\'ve already completed onboarding!', ephemeral: true });
+
         if (!onboardingState[interaction.user.id]) onboardingState[interaction.user.id] = {};
 
         const modal = new ModalBuilder()
@@ -864,7 +892,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // ── Payment: PayPal ──
+    // Payment: PayPal
     if (interaction.customId === 'onboarding_paypal') {
       try {
         const modal = new ModalBuilder()
@@ -884,7 +912,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // ── Payment: Bank Transfer ──
+    // Payment: Bank Transfer
     if (interaction.customId === 'onboarding_bank') {
       try {
         if (!onboardingState[interaction.user.id]) onboardingState[interaction.user.id] = {};
@@ -902,7 +930,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // ── Continue to step 3 ──
+    // Continue to step 3
     if (interaction.customId === 'onboarding_name_btn') {
       try {
         const modal = new ModalBuilder()
@@ -922,7 +950,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // ── Join Campaign ──
+    // Join Campaign
     if (interaction.customId.startsWith('join_campaign_')) {
       try {
         const campaignValue = interaction.customId.replace('join_campaign_', '');
@@ -960,7 +988,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // ── Open Ticket ──
+    // Open Ticket
     if (interaction.customId === 'open_ticket') {
       await interaction.deferReply({ ephemeral: true });
       try {
@@ -1125,7 +1153,7 @@ client.on('interactionCreate', async interaction => {
   // ── MODALS ────────────────────────────────────────────────────────────────
   if (interaction.isModalSubmit()) {
 
-    // ── Onboarding Step 1: TikTok ──
+    // Onboarding Step 1: TikTok
     if (interaction.customId === 'onboarding_tiktok') {
       try {
         const tiktok = interaction.fields.getTextInputValue('tiktok_url').trim();
@@ -1150,7 +1178,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // ── Onboarding Step 2a: PayPal Email ──
+    // Onboarding Step 2a: PayPal Email
     if (interaction.customId === 'onboarding_paypal_email') {
       try {
         const email = interaction.fields.getTextInputValue('paypal_email').trim();
@@ -1172,51 +1200,46 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // ── Onboarding Step 3: Name + completion ──
+    // Onboarding Step 3: Name + completion
     if (interaction.customId === 'onboarding_name') {
       try {
         const displayName = interaction.fields.getTextInputValue('display_name').trim();
         const state = onboardingState[interaction.user.id] || {};
-
         const member = await interaction.guild.members.fetch(interaction.user.id);
 
         // Set nickname
-        try {
-          await member.setNickname(displayName);
-        } catch {
-          // Bot can't change nickname of higher-ranked members — skip silently
-        }
+        try { await member.setNickname(displayName); } catch { /* Can't change higher-ranked members */ }
 
         // Give Editor role
         await member.roles.add(EDITOR_ROLE_ID);
 
-        // Delete the welcome message in #onboarding
+        // Delete welcome message from #onboarding
         if (state.welcomeMessageId) {
           try {
             const onboardingChannel = await client.channels.fetch(ONBOARDING_CHANNEL_ID);
             const welcomeMsg = await onboardingChannel.messages.fetch(state.welcomeMessageId);
             await welcomeMsg.delete();
-          } catch { /* Message may already be deleted */ }
+          } catch { /* Already deleted */ }
         }
 
         // Log to #log
         try {
           const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
           const now = new Date();
-          const timeStr = `${String(now.getDate()).padStart(2,'0')}/${String(now.getMonth()+1).padStart(2,'0')}/${now.getFullYear()} at ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-          const paymentStr = state.payment === 'paypal'
+          const timeString = `${String(now.getDate()).padStart(2,'0')}/${String(now.getMonth()+1).padStart(2,'0')}/${now.getFullYear()} at ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+          const paymentString = state.payment === 'paypal'
             ? `PayPal — ${state.paypalEmail}`
             : 'Bank Transfer';
 
           await logChannel.send(
             `👋 **New Member:** <@${interaction.user.id}> (@${interaction.user.username})\n` +
             `🎵 **TikTok:** ${state.tiktok || 'Not provided'}\n` +
-            `💳 **Payment:** ${paymentStr}\n` +
+            `💳 **Payment:** ${paymentString}\n` +
             `📝 **Display Name:** ${displayName}\n` +
-            `🕐 **Joined:** ${timeStr}`
+            `🕐 **Joined:** ${timeString}`
           );
         } catch (err) {
-          console.error('Log channel error:', err.message);
+          console.error('Log error:', err.message);
         }
 
         // Clean up state
@@ -1232,7 +1255,7 @@ client.on('interactionCreate', async interaction => {
             new ButtonBuilder()
               .setLabel('🎯 View Active Campaigns')
               .setStyle(ButtonStyle.Link)
-              .setURL(`https://discord.com/channels/${GUILD_ID}/1506778321969746092`)
+              .setURL(`https://discord.com/channels/${GUILD_ID}/${ACTIVE_CAMPAIGNS_CHANNEL_ID}`)
           )],
           ephemeral: true,
         });
@@ -1243,7 +1266,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // ── Submit Edit Modal ──
+    // Submit Edit Modal
     if (interaction.customId === 'submit_modal') {
       await interaction.deferReply({ ephemeral: true });
       try {
