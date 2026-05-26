@@ -312,13 +312,8 @@ client.on('guildMemberAdd', async member => {
   try {
     const channel = await client.channels.fetch(ONBOARDING_CHANNEL_ID);
     const msg = await channel.send({
-      content: `👋 Welcome <@${member.id}>! Please complete the onboarding below to get access to the server.`,
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('start_onboarding')
-          .setLabel('🚀 Start Onboarding')
-          .setStyle(ButtonStyle.Primary)
-      )],
+      const msg = await channel.send({
+      content: `👋 Welcome! Please complete the onboarding below to get access to the server.`,
     });
     // Store welcome message ID so we can delete it on completion
     onboardingState[member.id] = { welcomeMessageId: msg.id };
@@ -880,7 +875,7 @@ client.on('interactionCreate', async interaction => {
             .setCustomId('paypal_email')
             .setLabel('Your PayPal email address')
             .setStyle(TextInputStyle.Short)
-            .setPlaceholder('your@paypal.com')
+            .setPlaceholder('your@email.com')
             .setRequired(true)
         ));
         await interaction.showModal(modal);
@@ -918,7 +913,7 @@ client.on('interactionCreate', async interaction => {
             .setCustomId('display_name')
             .setLabel('What would you like to be called?')
             .setStyle(TextInputStyle.Short)
-            .setPlaceholder('e.g. Dxrkhood')
+            .setPlaceholder('Your name')
             .setRequired(true)
         ));
         await interaction.showModal(modal);
@@ -1237,7 +1232,7 @@ client.on('interactionCreate', async interaction => {
             new ButtonBuilder()
               .setLabel('🎯 View Active Campaigns')
               .setStyle(ButtonStyle.Link)
-              .setURL(`https://discord.com/channels/${GUILD_ID}/${ACTIVE_CAMPAIGNS_CHANNEL_ID}`)
+              .setURL(`https://discord.com/channels/${GUILD_ID}/1506778321969746092`)
           )],
           ephemeral: true,
         });
