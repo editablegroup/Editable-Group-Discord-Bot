@@ -199,6 +199,62 @@ async function updateAllStats(force = false) {
   }
 }
 
+// ===== ONBOARDING COMPLETION =====
+async function completeOnboarding(interaction, state) {
+  const member = await interaction.guild.members.fetch(interaction.user.id);
+
+  // Give Editor role
+  await member.roles.add(EDITOR_ROLE_ID);
+
+  // Delete welcome message from #onboarding
+  if (state.welcomeMessageId) {
+    try {
+      const onboardingChannel = await client.channels.fetch(ONBOARDING_CHANNEL_ID);
+      const welcomeMsg = await onboardingChannel.messages.fetch(state.welcomeMessageId);
+      await welcomeMsg.delete();
+    } catch { /* Already deleted or not found */ }
+  }
+
+  // Log to #log
+  try {
+    const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+    const now = new Date();
+    const timeString =
+      `${String(now.getDate()).padStart(2,'0')}/${String(now.getMonth()+1).padStart(2,'0')}/${now.getFullYear()}` +
+      ` at ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    const paymentString = state.payment === 'paypal'
+      ? `PayPal — ${state.paypalEmail}`
+      : 'Bank Transfer';
+
+    await logChannel.send(
+      `👋 **New Member:** <@${interaction.user.id}> (@${interaction.user.username})\n` +
+      `🎵 **TikTok:** ${state.tiktok || 'Not provided'}\n` +
+      `💳 **Payment:** ${paymentString}\n` +
+      `🕐 **Joined:** ${timeString}`
+    );
+  } catch (err) {
+    console.error('Log error:', err.message);
+  }
+
+  // Clean up state
+  delete onboardingState[interaction.user.id];
+
+  // Completion message
+  await interaction.reply({
+    content:
+      `✅ **You're all set! Welcome to Editable Group.**\n\n` +
+      `📢 Check out **Active Campaigns** to see what we're running right now and start earning.\n\n` +
+      `💬 **Stay on top of your DMs** — Cilord and Roca will reach out directly for payments, campaign updates and important info. Communication is what keeps Editable Group alive, so make sure you're always reachable. 🙏`,
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('🎯 View Active Campaigns')
+        .setStyle(ButtonStyle.Link)
+        .setURL(`https://discord.com/channels/${GUILD_ID}/${ACTIVE_CAMPAIGNS_CHANNEL_ID}`)
+    )],
+    ephemeral: true,
+  });
+}
+
 // ===== CLIENT =====
 const client = new Client({
   intents: [
@@ -875,7 +931,7 @@ client.on('interactionCreate', async interaction => {
 
         const modal = new ModalBuilder()
           .setCustomId('onboarding_tiktok')
-          .setTitle('Step 1/3 — TikTok Profile');
+          .setTitle('Step 1/2 — TikTok Profile');
         modal.addComponents(new ActionRowBuilder().addComponents(
           new TextInputBuilder()
             .setCustomId('tiktok_url')
@@ -897,7 +953,7 @@ client.on('interactionCreate', async interaction => {
       try {
         const modal = new ModalBuilder()
           .setCustomId('onboarding_paypal_email')
-          .setTitle('Step 2/3 — PayPal Email');
+          .setTitle('Step 2/2 — PayPal Email');
         modal.addComponents(new ActionRowBuilder().addComponents(
           new TextInputBuilder()
             .setCustomId('paypal_email')
@@ -912,41 +968,15 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Payment: Bank Transfer
+    // Payment: Bank Transfer — completes immediately
     if (interaction.customId === 'onboarding_bank') {
       try {
         if (!onboardingState[interaction.user.id]) onboardingState[interaction.user.id] = {};
         onboardingState[interaction.user.id].payment = 'bank';
-        await interaction.update({
-          content:
-            `✅ Got it! We'll DM you before campaign deadlines for your bank transfer details.\n\n` +
-            `📝 **Step 3/3 — Your display name**\nWhat would you like to be called in the server?`,
-          components: [new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('onboarding_name_btn').setLabel('Enter my name').setStyle(ButtonStyle.Primary)
-          )],
-        });
+        const state = onboardingState[interaction.user.id];
+        await completeOnboarding(interaction, state);
       } catch (err) {
         console.error('onboarding_bank error:', err);
-      }
-    }
-
-    // Continue to step 3
-    if (interaction.customId === 'onboarding_name_btn') {
-      try {
-        const modal = new ModalBuilder()
-          .setCustomId('onboarding_name')
-          .setTitle('Step 3/3 — Display Name');
-        modal.addComponents(new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('display_name')
-            .setLabel('What would you like to be called?')
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder('Your name')
-            .setRequired(true)
-        ));
-        await interaction.showModal(modal);
-      } catch (err) {
-        console.error('onboarding_name_btn error:', err);
       }
     }
 
@@ -1165,8 +1195,8 @@ client.on('interactionCreate', async interaction => {
 
         await interaction.reply({
           content:
-            `✅ **Step 1/3 done!**\n\n` +
-            `💳 **Step 2/3 — Payment method**\nHow would you like to receive your payments?`,
+            `✅ **Step 1/2 done!**\n\n` +
+            `💳 **Step 2/2 — Payment method**\nHow would you like to receive your payments?`,
           components: [new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('onboarding_paypal').setLabel('💸 PayPal').setStyle(ButtonStyle.Primary),
             new ButtonBuilder().setCustomId('onboarding_bank').setLabel('🏦 Bank Transfer').setStyle(ButtonStyle.Secondary),
@@ -1178,91 +1208,17 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Onboarding Step 2a: PayPal Email
+    // Onboarding Step 2: PayPal Email — completes onboarding
     if (interaction.customId === 'onboarding_paypal_email') {
       try {
         const email = interaction.fields.getTextInputValue('paypal_email').trim();
         if (!onboardingState[interaction.user.id]) onboardingState[interaction.user.id] = {};
         onboardingState[interaction.user.id].payment = 'paypal';
         onboardingState[interaction.user.id].paypalEmail = email;
-
-        await interaction.reply({
-          content:
-            `✅ **Payment saved!**\n\n` +
-            `📝 **Step 3/3 — Your display name**\nWhat would you like to be called in the server?`,
-          components: [new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('onboarding_name_btn').setLabel('Enter my name').setStyle(ButtonStyle.Primary)
-          )],
-          ephemeral: true,
-        });
+        const state = onboardingState[interaction.user.id];
+        await completeOnboarding(interaction, state);
       } catch (err) {
         console.error('onboarding_paypal_email error:', err);
-      }
-    }
-
-    // Onboarding Step 3: Name + completion
-    if (interaction.customId === 'onboarding_name') {
-      try {
-        const displayName = interaction.fields.getTextInputValue('display_name').trim();
-        const state = onboardingState[interaction.user.id] || {};
-        const member = await interaction.guild.members.fetch(interaction.user.id);
-
-        // Set nickname
-        try { await member.setNickname(displayName); } catch { /* Can't change higher-ranked members */ }
-
-        // Give Editor role
-        await member.roles.add(EDITOR_ROLE_ID);
-
-        // Delete welcome message from #onboarding
-        if (state.welcomeMessageId) {
-          try {
-            const onboardingChannel = await client.channels.fetch(ONBOARDING_CHANNEL_ID);
-            const welcomeMsg = await onboardingChannel.messages.fetch(state.welcomeMessageId);
-            await welcomeMsg.delete();
-          } catch { /* Already deleted */ }
-        }
-
-        // Log to #log
-        try {
-          const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
-          const now = new Date();
-          const timeString = `${String(now.getDate()).padStart(2,'0')}/${String(now.getMonth()+1).padStart(2,'0')}/${now.getFullYear()} at ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-          const paymentString = state.payment === 'paypal'
-            ? `PayPal — ${state.paypalEmail}`
-            : 'Bank Transfer';
-
-          await logChannel.send(
-            `👋 **New Member:** <@${interaction.user.id}> (@${interaction.user.username})\n` +
-            `🎵 **TikTok:** ${state.tiktok || 'Not provided'}\n` +
-            `💳 **Payment:** ${paymentString}\n` +
-            `📝 **Display Name:** ${displayName}\n` +
-            `🕐 **Joined:** ${timeString}`
-          );
-        } catch (err) {
-          console.error('Log error:', err.message);
-        }
-
-        // Clean up state
-        delete onboardingState[interaction.user.id];
-
-        // Completion message
-        await interaction.reply({
-          content:
-            `✅ **You're all set! Welcome to Editable Group, ${displayName}.**\n\n` +
-            `📢 Check out **Active Campaigns** to see what we're running right now and start earning.\n\n` +
-            `💬 **Stay on top of your DMs** — Cilord and Roca will reach out directly for payments, campaign updates and important info. Communication is what keeps Editable Group alive, so make sure you're always reachable. 🙏`,
-          components: [new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-              .setLabel('🎯 View Active Campaigns')
-              .setStyle(ButtonStyle.Link)
-              .setURL(`https://discord.com/channels/${GUILD_ID}/${ACTIVE_CAMPAIGNS_CHANNEL_ID}`)
-          )],
-          ephemeral: true,
-        });
-      } catch (err) {
-        console.error('onboarding_name error:', err);
-        if (!interaction.replied && !interaction.deferred)
-          await interaction.reply({ content: '❌ Something went wrong during onboarding. Please try again.', ephemeral: true }).catch(() => {});
       }
     }
 
