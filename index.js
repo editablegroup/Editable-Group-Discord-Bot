@@ -29,6 +29,12 @@ const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const RAPIDAPI_HOST = 'tiktok-api23.p.rapidapi.com';
 const TWELVE_HOURS = 12 * 60 * 60 * 1000;
 
+// Onboarding
+const ONBOARDING_CHANNEL_ID = '1508909360510795837';
+const LOG_CHANNEL_ID = '1505978732010274846';
+const EDITOR_ROLE_ID = '1437195425819131915';
+const ACTIVE_CAMPAIGNS_CHANNEL_ID = '1506772811556061324';
+
 function isOwner(userId) {
   return userId === OWNER_ID || userId === ROCA_ID;
 }
@@ -43,10 +49,6 @@ function normalizeUrl(url) {
 }
 
 // ===== CAMPAIGNS =====
-// budget = RPM payout pool only (bonuses are separate and shown on top)
-// roleId = Discord role given when editor joins campaign
-// announcementChannelId = channel the "Start Earning" button links to
-// offerChannelId = channel where /campaignoffer posts the offer message
 const CAMPAIGNS = [
   {
     label: 'Alter Ego - Doechii Ft. JT',
@@ -76,10 +78,10 @@ const CAMPAIGNS = [
     rpm: 1.25,
     maxPayout: 400,
     minViews: 1500,
-    budget: 1075,    // $1,300 total - $225 bonuses = $1,075 RPM pool
+    budget: 1075,
     bonus1st: 150,
     bonus2nd: 75,
-    endDate: new Date('2026-05-31T03:59:59Z'), // update this when you know the end date
+    endDate: new Date('2026-06-01T03:59:59Z'), // 11:59 PM ET May 31st
     roleId: '1506777268754579506',
     announcementChannelId: '1506777667020521472',
     offerChannelId: '1506778321969746092',
@@ -111,8 +113,9 @@ function buildPostLinks(subs) {
   return subs.map((s, i) => `[${i + 1}](<${normalizeUrl(s.link)}>)`).join(' ');
 }
 
-// In-memory cache for /stats pagination
+// In-memory stores
 const statsPageCache = {};
+const onboardingState = {}; // userId -> { tiktok, payment, paypalEmail, welcomeMessageId }
 
 // ===== TIKTOK STATS =====
 async function extractVideoId(url) {
@@ -199,7 +202,12 @@ async function updateAllStats(force = false) {
 }
 
 // ===== CLIENT =====
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+  ]
+});
 const pendingCampaign = {};
 
 // ===== COMMANDS =====
@@ -297,6 +305,26 @@ client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
   setTimeout(() => updateAllStats(false), 15000);
   setInterval(() => updateAllStats(false), TWELVE_HOURS);
+});
+
+// ===== NEW MEMBER — post welcome message in #onboarding =====
+client.on('guildMemberAdd', async member => {
+  try {
+    const channel = await client.channels.fetch(ONBOARDING_CHANNEL_ID);
+    const msg = await channel.send({
+      content: `👋 Welcome <@${member.id}>! Please complete the onboarding below to get access to the server.`,
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('start_onboarding')
+          .setLabel('🚀 Start Onboarding')
+          .setStyle(ButtonStyle.Primary)
+      )],
+    });
+    // Store welcome message ID so we can delete it on completion
+    onboardingState[member.id] = { welcomeMessageId: msg.id };
+  } catch (err) {
+    console.error('guildMemberAdd error:', err.message);
+  }
 });
 
 // ===== BUILD: MY SUBMISSIONS EMBED =====
@@ -472,7 +500,7 @@ async function buildEarningsText(campaignValue) {
   return text;
 }
 
-// ===== BUILD: STATS (paginated, sorted by actual post date) =====
+// ===== BUILD: STATS (paginated) =====
 async function buildStatsPages(campaignValue, filterUserId = null) {
   const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
   if (!campaign) return ['❌ Campaign not found.'];
@@ -625,13 +653,14 @@ client.on('interactionCreate', async interaction => {
             `💵 Total budget: ${fmtUSD(campaign.budget + campaign.bonus1st + campaign.bonus2nd)}\n` +
             `🎁 Bonuses: 🥇 ${fmtUSD(campaign.bonus1st)} · 🥈 ${fmtUSD(campaign.bonus2nd)}\n` +
             `📈 Min. views to earn: ${campaign.minViews.toLocaleString()}\n` +
-            `📅 End date: <t:${endTs}:D>`
+            `📅 End date: May 31st (11:59 PM ET)`
           },
           { name: '📝 Brief', value: campaign.brief || 'No brief provided.' },
           { name: '\u200b', value: '👇 **JOIN BELOW TO START EARNING NOW!**' },
         );
 
       await offerChannel.send({
+        content: '@everyone',
         embeds: [embed],
         components: [new ActionRowBuilder().addComponents(
           new ButtonBuilder()
@@ -795,7 +824,7 @@ client.on('interactionCreate', async interaction => {
   // ── BUTTONS ───────────────────────────────────────────────────────────────
   if (interaction.isButton()) {
 
-    // Stats pagination
+    // ── Stats pagination ──
     if (interaction.customId === 'stats_prev' || interaction.customId === 'stats_next') {
       await interaction.deferUpdate();
       try {
@@ -811,7 +840,94 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Join campaign button
+    // ── Start Onboarding ──
+    if (interaction.customId === 'start_onboarding') {
+      try {
+        const member = await interaction.guild.members.fetch(interaction.user.id);
+        if (member.roles.cache.has(EDITOR_ROLE_ID)) {
+          return interaction.reply({ content: '✅ You\'ve already completed onboarding! Welcome back.', ephemeral: true });
+        }
+        // Initialize state if not already set
+        if (!onboardingState[interaction.user.id]) onboardingState[interaction.user.id] = {};
+
+        const modal = new ModalBuilder()
+          .setCustomId('onboarding_tiktok')
+          .setTitle('Step 1/3 — TikTok Profile');
+        modal.addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('tiktok_url')
+            .setLabel('Your TikTok profile link')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('https://www.tiktok.com/@yourprofile')
+            .setRequired(true)
+        ));
+        await interaction.showModal(modal);
+      } catch (err) {
+        console.error('start_onboarding error:', err);
+        if (!interaction.replied && !interaction.deferred)
+          await interaction.reply({ content: '❌ Something went wrong.', ephemeral: true }).catch(() => {});
+      }
+    }
+
+    // ── Payment: PayPal ──
+    if (interaction.customId === 'onboarding_paypal') {
+      try {
+        const modal = new ModalBuilder()
+          .setCustomId('onboarding_paypal_email')
+          .setTitle('Step 2/3 — PayPal Email');
+        modal.addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('paypal_email')
+            .setLabel('Your PayPal email address')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('your@paypal.com')
+            .setRequired(true)
+        ));
+        await interaction.showModal(modal);
+      } catch (err) {
+        console.error('onboarding_paypal error:', err);
+      }
+    }
+
+    // ── Payment: Bank Transfer ──
+    if (interaction.customId === 'onboarding_bank') {
+      try {
+        if (!onboardingState[interaction.user.id]) onboardingState[interaction.user.id] = {};
+        onboardingState[interaction.user.id].payment = 'bank';
+        await interaction.update({
+          content:
+            `✅ Got it! We'll DM you before campaign deadlines for your bank transfer details.\n\n` +
+            `📝 **Step 3/3 — Your display name**\nWhat would you like to be called in the server?`,
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('onboarding_name_btn').setLabel('Enter my name').setStyle(ButtonStyle.Primary)
+          )],
+        });
+      } catch (err) {
+        console.error('onboarding_bank error:', err);
+      }
+    }
+
+    // ── Continue to step 3 ──
+    if (interaction.customId === 'onboarding_name_btn') {
+      try {
+        const modal = new ModalBuilder()
+          .setCustomId('onboarding_name')
+          .setTitle('Step 3/3 — Display Name');
+        modal.addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('display_name')
+            .setLabel('What would you like to be called?')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('e.g. Dxrkhood')
+            .setRequired(true)
+        ));
+        await interaction.showModal(modal);
+      } catch (err) {
+        console.error('onboarding_name_btn error:', err);
+      }
+    }
+
+    // ── Join Campaign ──
     if (interaction.customId.startsWith('join_campaign_')) {
       try {
         const campaignValue = interaction.customId.replace('join_campaign_', '');
@@ -821,7 +937,6 @@ client.on('interactionCreate', async interaction => {
 
         const member = await interaction.guild.members.fetch(interaction.user.id);
 
-        // Check if already joined
         if (member.roles.cache.has(campaign.roleId)) {
           return interaction.reply({
             content: `✅ You're already in this campaign! Head over to <#${campaign.announcementChannelId}> to get started.`,
@@ -829,12 +944,12 @@ client.on('interactionCreate', async interaction => {
           });
         }
 
-        // Give the role
         await member.roles.add(campaign.roleId);
 
-        // Reply with "Start Earning" link button
         await interaction.reply({
-          content: `✅ You've successfully joined **${campaign.label}**! Before you begin posting, make sure to check out the rules, brief and audios! Start earning by clicking below.`,
+          content:
+            `✅ You've successfully joined **${campaign.label}**!\n\n` +
+            `Before you start posting, make sure to check out **#rules** and **#audios** in the campaign channel. Good luck! 🎬`,
           components: [new ActionRowBuilder().addComponents(
             new ButtonBuilder()
               .setLabel('🎬 Start Earning')
@@ -850,6 +965,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
+    // ── Open Ticket ──
     if (interaction.customId === 'open_ticket') {
       await interaction.deferReply({ ephemeral: true });
       try {
@@ -1011,58 +1127,180 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── MODAL SUBMIT ──────────────────────────────────────────────────────────
-  if (interaction.isModalSubmit() && interaction.customId === 'submit_modal') {
-    await interaction.deferReply({ ephemeral: true });
-    try {
-      const clipName = interaction.fields.getTextInputValue('clip_name') || 'Untitled';
-      const clipLink = normalizeUrl(interaction.fields.getTextInputValue('clip_link').trim());
-      const campaignInfo = pendingCampaign[interaction.user.id];
-      delete pendingCampaign[interaction.user.id];
+  // ── MODALS ────────────────────────────────────────────────────────────────
+  if (interaction.isModalSubmit()) {
 
-      if (!campaignInfo)
-        return interaction.editReply({ content: '❌ Session expired — please try submitting again.' });
-      if (!clipLink.includes('tiktok.com'))
-        return interaction.editReply({ content: '❌ Please provide a valid TikTok link.' });
+    // ── Onboarding Step 1: TikTok ──
+    if (interaction.customId === 'onboarding_tiktok') {
+      try {
+        const tiktok = interaction.fields.getTextInputValue('tiktok_url').trim();
+        if (!tiktok.includes('tiktok.com'))
+          return interaction.reply({ content: '❌ Please enter a valid TikTok profile URL (must include tiktok.com).', ephemeral: true });
 
-      const counterDoc = await db.collection('counters').findOneAndUpdate(
-        { campaignValue: campaignInfo.value },
-        { $inc: { count: 1 } },
-        { upsert: true, returnDocument: 'after' }
-      );
+        if (!onboardingState[interaction.user.id]) onboardingState[interaction.user.id] = {};
+        onboardingState[interaction.user.id].tiktok = tiktok;
 
-      const result = await db.collection('submissions').insertOne({
-        userId: interaction.user.id,
-        username: interaction.user.username,
-        campaignValue: campaignInfo.value,
-        campaignLabel: campaignInfo.label,
-        clipName,
-        link: clipLink,
-        status: 'Pending',
-        campaignNumber: counterDoc.count,
-        views: 0,
-        likes: 0,
-        earnings: 0,
-        lastUpdated: null,
-        submittedAt: new Date(),
-      });
+        await interaction.reply({
+          content:
+            `✅ **Step 1/3 done!**\n\n` +
+            `💳 **Step 2/3 — Payment method**\nHow would you like to receive your payments?`,
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('onboarding_paypal').setLabel('💸 PayPal').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('onboarding_bank').setLabel('🏦 Bank Transfer').setStyle(ButtonStyle.Secondary),
+          )],
+          ephemeral: true,
+        });
+      } catch (err) {
+        console.error('onboarding_tiktok error:', err);
+      }
+    }
 
-      const subId = result.insertedId.toString();
-      const submissionsChannel = await client.channels.fetch(SUBMISSIONS_CHANNEL_ID);
-      await submissionsChannel.send({
-        content:
-          `📩 ${campaignInfo.label} — Post #${counterDoc.count}\n` +
-          `👤 <@${interaction.user.id}>\n🎬 ${clipName}\n🔗 <${clipLink}>\n📊 Status: Pending`,
-        components: [new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`approve_${subId}`).setLabel('Approve').setStyle(ButtonStyle.Success),
-          new ButtonBuilder().setCustomId(`reject_${subId}`).setLabel('Reject').setStyle(ButtonStyle.Danger)
-        )],
-      });
+    // ── Onboarding Step 2a: PayPal Email ──
+    if (interaction.customId === 'onboarding_paypal_email') {
+      try {
+        const email = interaction.fields.getTextInputValue('paypal_email').trim();
+        if (!onboardingState[interaction.user.id]) onboardingState[interaction.user.id] = {};
+        onboardingState[interaction.user.id].payment = 'paypal';
+        onboardingState[interaction.user.id].paypalEmail = email;
 
-      return interaction.editReply({ content: '✅ Edit submitted! You\'ll receive a DM once it\'s been reviewed.' });
-    } catch (err) {
-      console.error('submit_modal error:', err);
-      return interaction.editReply({ content: '❌ Something went wrong. Please try again.' });
+        await interaction.reply({
+          content:
+            `✅ **Payment saved!**\n\n` +
+            `📝 **Step 3/3 — Your display name**\nWhat would you like to be called in the server?`,
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('onboarding_name_btn').setLabel('Enter my name').setStyle(ButtonStyle.Primary)
+          )],
+          ephemeral: true,
+        });
+      } catch (err) {
+        console.error('onboarding_paypal_email error:', err);
+      }
+    }
+
+    // ── Onboarding Step 3: Name + completion ──
+    if (interaction.customId === 'onboarding_name') {
+      try {
+        const displayName = interaction.fields.getTextInputValue('display_name').trim();
+        const state = onboardingState[interaction.user.id] || {};
+
+        const member = await interaction.guild.members.fetch(interaction.user.id);
+
+        // Set nickname
+        try {
+          await member.setNickname(displayName);
+        } catch {
+          // Bot can't change nickname of higher-ranked members — skip silently
+        }
+
+        // Give Editor role
+        await member.roles.add(EDITOR_ROLE_ID);
+
+        // Delete the welcome message in #onboarding
+        if (state.welcomeMessageId) {
+          try {
+            const onboardingChannel = await client.channels.fetch(ONBOARDING_CHANNEL_ID);
+            const welcomeMsg = await onboardingChannel.messages.fetch(state.welcomeMessageId);
+            await welcomeMsg.delete();
+          } catch { /* Message may already be deleted */ }
+        }
+
+        // Log to #log
+        try {
+          const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+          const now = new Date();
+          const timeStr = `${String(now.getDate()).padStart(2,'0')}/${String(now.getMonth()+1).padStart(2,'0')}/${now.getFullYear()} at ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+          const paymentStr = state.payment === 'paypal'
+            ? `PayPal — ${state.paypalEmail}`
+            : 'Bank Transfer';
+
+          await logChannel.send(
+            `👋 **New Member:** <@${interaction.user.id}> (@${interaction.user.username})\n` +
+            `🎵 **TikTok:** ${state.tiktok || 'Not provided'}\n` +
+            `💳 **Payment:** ${paymentStr}\n` +
+            `📝 **Display Name:** ${displayName}\n` +
+            `🕐 **Joined:** ${timeStr}`
+          );
+        } catch (err) {
+          console.error('Log channel error:', err.message);
+        }
+
+        // Clean up state
+        delete onboardingState[interaction.user.id];
+
+        // Completion message
+        await interaction.reply({
+          content:
+            `✅ **You're all set! Welcome to Editable Group, ${displayName}.**\n\n` +
+            `📢 Check out **Active Campaigns** to see what we're running right now and start earning.\n\n` +
+            `💬 **Stay on top of your DMs** — Cilord and Roca will reach out directly for payments, campaign updates and important info. Communication is what keeps Editable Group alive, so make sure you're always reachable. 🙏`,
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setLabel('🎯 View Active Campaigns')
+              .setStyle(ButtonStyle.Link)
+              .setURL(`https://discord.com/channels/${GUILD_ID}/${ACTIVE_CAMPAIGNS_CHANNEL_ID}`)
+          )],
+          ephemeral: true,
+        });
+      } catch (err) {
+        console.error('onboarding_name error:', err);
+        if (!interaction.replied && !interaction.deferred)
+          await interaction.reply({ content: '❌ Something went wrong during onboarding. Please try again.', ephemeral: true }).catch(() => {});
+      }
+    }
+
+    // ── Submit Edit Modal ──
+    if (interaction.customId === 'submit_modal') {
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const clipName = interaction.fields.getTextInputValue('clip_name') || 'Untitled';
+        const clipLink = normalizeUrl(interaction.fields.getTextInputValue('clip_link').trim());
+        const campaignInfo = pendingCampaign[interaction.user.id];
+        delete pendingCampaign[interaction.user.id];
+
+        if (!campaignInfo)
+          return interaction.editReply({ content: '❌ Session expired — please try submitting again.' });
+        if (!clipLink.includes('tiktok.com'))
+          return interaction.editReply({ content: '❌ Please provide a valid TikTok link.' });
+
+        const counterDoc = await db.collection('counters').findOneAndUpdate(
+          { campaignValue: campaignInfo.value },
+          { $inc: { count: 1 } },
+          { upsert: true, returnDocument: 'after' }
+        );
+
+        const result = await db.collection('submissions').insertOne({
+          userId: interaction.user.id,
+          username: interaction.user.username,
+          campaignValue: campaignInfo.value,
+          campaignLabel: campaignInfo.label,
+          clipName,
+          link: clipLink,
+          status: 'Pending',
+          campaignNumber: counterDoc.count,
+          views: 0,
+          likes: 0,
+          earnings: 0,
+          lastUpdated: null,
+          submittedAt: new Date(),
+        });
+
+        const subId = result.insertedId.toString();
+        const submissionsChannel = await client.channels.fetch(SUBMISSIONS_CHANNEL_ID);
+        await submissionsChannel.send({
+          content:
+            `📩 ${campaignInfo.label} — Post #${counterDoc.count}\n` +
+            `👤 <@${interaction.user.id}>\n🎬 ${clipName}\n🔗 <${clipLink}>\n📊 Status: Pending`,
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`approve_${subId}`).setLabel('Approve').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId(`reject_${subId}`).setLabel('Reject').setStyle(ButtonStyle.Danger)
+          )],
+        });
+
+        return interaction.editReply({ content: '✅ Edit submitted! You\'ll receive a DM once it\'s been reviewed.' });
+      } catch (err) {
+        console.error('submit_modal error:', err);
+        return interaction.editReply({ content: '❌ Something went wrong. Please try again.' });
+      }
     }
   }
 });
