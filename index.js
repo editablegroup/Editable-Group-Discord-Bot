@@ -112,6 +112,11 @@ function buildPostLinks(subs) {
   return subs.map((s, i) => `[${i + 1}](<${normalizeUrl(s.link)}>)`).join(' ');
 }
 
+async function getTotalDeducted(campaignValue) {
+  const deductions = await db.collection('deductions').find({ campaignValue }).toArray();
+  return deductions.reduce((sum, d) => sum + (d.amount || 0), 0);
+}
+
 const statsPageCache = {};
 const onboardingState = {};
 
@@ -202,20 +207,16 @@ async function updateAllStats(force = false) {
 // ===== ONBOARDING COMPLETION =====
 async function completeOnboarding(interaction, state) {
   const member = await interaction.guild.members.fetch(interaction.user.id);
-
-  // Give Editor role
   await member.roles.add(EDITOR_ROLE_ID);
 
-  // Delete welcome message from #onboarding
   if (state.welcomeMessageId) {
     try {
       const onboardingChannel = await client.channels.fetch(ONBOARDING_CHANNEL_ID);
       const welcomeMsg = await onboardingChannel.messages.fetch(state.welcomeMessageId);
       await welcomeMsg.delete();
-    } catch { /* Already deleted or not found */ }
+    } catch { }
   }
 
-  // Log to #log
   try {
     const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
     const now = new Date();
@@ -225,7 +226,6 @@ async function completeOnboarding(interaction, state) {
     const paymentString = state.payment === 'paypal'
       ? `PayPal — ${state.paypalEmail}`
       : 'Bank Transfer';
-
     await logChannel.send(
       `👋 **New Member:** <@${interaction.user.id}> (@${interaction.user.username})\n` +
       `🎵 **TikTok:** ${state.tiktok || 'Not provided'}\n` +
@@ -236,10 +236,8 @@ async function completeOnboarding(interaction, state) {
     console.error('Log error:', err.message);
   }
 
-  // Clean up state
   delete onboardingState[interaction.user.id];
 
-  // Completion message
   await interaction.reply({
     content:
       `✅ **You're all set! Welcome to Editable Group.**\n\n` +
@@ -326,6 +324,17 @@ const commands = [
     .setDescription('Remove a submission by TikTok link — owner only')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption(opt => opt.setName('link').setDescription('TikTok link to remove').setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName('deductbudget')
+    .setDescription('Manually deduct an amount from a campaign budget — owner only')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption(opt =>
+      opt.setName('campaign').setDescription('Which campaign').setRequired(true)
+        .addChoices(...CAMPAIGNS.map(c => ({ name: c.label, value: c.value })))
+    )
+    .addNumberOption(opt => opt.setName('amount').setDescription('Amount to deduct in USD (e.g. 80)').setRequired(true))
+    .addStringOption(opt => opt.setName('reason').setDescription('Reason for deduction').setRequired(true)),
 
   new SlashCommandBuilder()
     .setName('panel')
@@ -467,9 +476,12 @@ async function buildLeaderboardText(campaignValue) {
 
   const isActive = new Date() < campaign.endDate;
   const endTs = Math.floor(campaign.endDate.getTime() / 1000);
+
   let totalRpmEarned = 0;
   for (const sub of approved) totalRpmEarned += sub.earnings || 0;
-  const budgetRemaining = Math.max(0, campaign.budget - totalRpmEarned);
+  const totalDeducted = await getTotalDeducted(campaignValue);
+  const budgetRemaining = Math.max(0, campaign.budget - totalRpmEarned - totalDeducted);
+
   const totalViews = approved.reduce((sum, s) => sum + (s.views || 0), 0);
   const lastRun = await db.collection('metadata').findOne({ key: 'lastStatsRun' });
   const lastRunAgo = lastRun ? timeAgo(lastRun.value) : null;
@@ -528,15 +540,24 @@ async function buildEarningsText(campaignValue) {
 
   let totalRpm = 0;
   for (const [, data] of sorted) totalRpm += data.earnings;
-  const budgetRemaining = Math.max(0, campaign.budget - totalRpm);
+  const totalDeducted = await getTotalDeducted(campaignValue);
+  const budgetRemaining = Math.max(0, campaign.budget - totalRpm - totalDeducted);
+
   const totalViews = Object.values(userMap).reduce((sum, d) => sum + d.views, 0);
   const lastRun = await db.collection('metadata').findOne({ key: 'lastStatsRun' });
   const lastRunAgo = lastRun ? timeAgo(lastRun.value) : null;
 
+  // Fetch deductions list for display
+  const deductions = await db.collection('deductions').find({ campaignValue }).toArray();
+
   let text = `💰 **${campaign.label} — Earnings Breakdown**\n`;
   text += isActive ? `🟢 Active — ends <t:${endTs}:R>\n` : `🔴 Campaign ended\n`;
   text += `👁️ Total views: ${fmtViews(totalViews)}\n`;
-  text += `📊 Budget: ${fmtUSD(campaign.budget)} | Spent: ${fmtUSD(totalRpm)} | Remaining: ${fmtUSD(budgetRemaining)}\n`;
+  text += `📊 Budget: ${fmtUSD(campaign.budget)} | Spent: ${fmtUSD(totalRpm + totalDeducted)} | Remaining: ${fmtUSD(budgetRemaining)}\n`;
+  if (deductions.length > 0) {
+    text += `📋 Manual deductions: `;
+    text += deductions.map(d => `${fmtUSD(d.amount)} (${d.reason})`).join(', ') + '\n';
+  }
   text += `🎁 Bonuses (on top of budget): 🥇 ${fmtUSD(campaign.bonus1st)} · 🥈 ${fmtUSD(campaign.bonus2nd)}\n`;
   text += `🕐 ${lastRunAgo ? `Updated ${lastRunAgo}` : 'Not updated yet'} · Updates every 12h\n\n`;
 
@@ -798,6 +819,34 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── /deductbudget ─────────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'deductbudget') {
+    if (!isOwner(interaction.user.id))
+      return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const campaignValue = interaction.options.getString('campaign');
+      const amount = interaction.options.getNumber('amount');
+      const reason = interaction.options.getString('reason');
+      const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
+
+      await db.collection('deductions').insertOne({
+        campaignValue,
+        amount,
+        reason,
+        createdBy: interaction.user.id,
+        createdAt: new Date(),
+      });
+
+      return interaction.editReply({
+        content: `✅ Deducted **${fmtUSD(amount)}** from **${campaign.label}**\n📝 Reason: ${reason}\n\nThis will now be reflected in \`/earnings\` and \`/leaderboard\`.`,
+      });
+    } catch (err) {
+      console.error('deductbudget error:', err);
+      return interaction.editReply({ content: '❌ Something went wrong.' });
+    }
+  }
+
   // ── /panel ────────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'panel') {
     if (!isOwner(interaction.user.id))
@@ -904,7 +953,6 @@ client.on('interactionCreate', async interaction => {
   // ── BUTTONS ───────────────────────────────────────────────────────────────
   if (interaction.isButton()) {
 
-    // Stats pagination
     if (interaction.customId === 'stats_prev' || interaction.customId === 'stats_next') {
       await interaction.deferUpdate();
       try {
@@ -920,7 +968,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Start Onboarding
     if (interaction.customId === 'start_onboarding') {
       try {
         const member = await interaction.guild.members.fetch(interaction.user.id);
@@ -948,7 +995,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Payment: PayPal
     if (interaction.customId === 'onboarding_paypal') {
       try {
         const modal = new ModalBuilder()
@@ -968,7 +1014,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Payment: Bank Transfer — completes immediately
     if (interaction.customId === 'onboarding_bank') {
       try {
         if (!onboardingState[interaction.user.id]) onboardingState[interaction.user.id] = {};
@@ -980,7 +1025,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Join Campaign
     if (interaction.customId.startsWith('join_campaign_')) {
       try {
         const campaignValue = interaction.customId.replace('join_campaign_', '');
@@ -1018,7 +1062,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Open Ticket
     if (interaction.customId === 'open_ticket') {
       await interaction.deferReply({ ephemeral: true });
       try {
@@ -1183,7 +1226,6 @@ client.on('interactionCreate', async interaction => {
   // ── MODALS ────────────────────────────────────────────────────────────────
   if (interaction.isModalSubmit()) {
 
-    // Onboarding Step 1: TikTok
     if (interaction.customId === 'onboarding_tiktok') {
       try {
         const tiktok = interaction.fields.getTextInputValue('tiktok_url').trim();
@@ -1208,7 +1250,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Onboarding Step 2: PayPal Email — completes onboarding
     if (interaction.customId === 'onboarding_paypal_email') {
       try {
         const email = interaction.fields.getTextInputValue('paypal_email').trim();
@@ -1222,7 +1263,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Submit Edit Modal
     if (interaction.customId === 'submit_modal') {
       await interaction.deferReply({ ephemeral: true });
       try {
