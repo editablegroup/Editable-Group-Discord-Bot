@@ -80,7 +80,7 @@ const CAMPAIGNS = [
     budget: 1075,
     bonus1st: 150,
     bonus2nd: 75,
-    endDate: new Date('2026-06-04T03:59:59Z'),
+    endDate: new Date('2026-06-03T21:59:59Z'),
     roleId: '1506777268754579506',
     announcementChannelId: '1506777667020521472',
     offerChannelId: '1506778321969746092',
