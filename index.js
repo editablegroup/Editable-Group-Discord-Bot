@@ -197,6 +197,29 @@ async function updateAllStats(force = false) {
       if (stats.createTime) updateFields.postedAt = new Date(stats.createTime * 1000);
       await db.collection('submissions').updateOne({ _id: sub._id }, { $set: updateFields });
       updated++;
+
+      // --- Referral: $50 bonus, first single post by this invitee to cross 500k, before campaign deadline ---
+      try {
+        if (stats.views >= 500000 && new Date() <= campaign.endDate) {
+          const referral = await db.collection('referrals').findOne({
+            inviteeId: sub.userId,
+            bonus500kPaid: false,
+          });
+          if (referral) {
+            await db.collection('referrals').updateOne(
+              { _id: referral._id },
+              { $set: { bonus500kPaid: true, bonus500kAt: new Date(), bonus500kSubmissionId: sub._id } }
+            );
+            const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+            await logChannel.send(
+              `🔗 **Referral bonus:** <@${referral.inviterId}> referred <@${sub.userId}>, whose post on **${sub.campaignLabel}** just crossed **500,000 views**.\n` +
+              `💵 <@${referral.inviterId}> earns **$${REFERRAL_500K_BONUS}**.`
+            );
+          }
+        }
+      } catch (err) {
+        console.error('[Referrals] 500k bonus error:', err.message);
+      }
     }
     console.log(`[Stats] Updated ${updated}/${approved.length} submissions`);
   } catch (err) {
@@ -258,9 +281,15 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildInvites,
   ]
 });
 const pendingCampaign = {};
+
+// ===== REFERRAL CONFIG =====
+const REFERRAL_FIRST_POST_BONUS = 5;   // paid to inviter when invitee's first submission is approved (ever)
+const REFERRAL_500K_BONUS = 50;        // paid to inviter when invitee's single post crosses 500k views for the first time
+const inviteCache = new Map(); // guildId -> Map(code -> uses)
 
 // ===== COMMANDS =====
 const commands = [
@@ -369,15 +398,62 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 })();
 
 // ===== READY =====
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   setTimeout(() => updateAllStats(false), 15000);
   setInterval(() => updateAllStats(false), TWELVE_HOURS);
+
+  try {
+    const guild = await client.guilds.fetch(GUILD_ID);
+    const invites = await guild.invites.fetch();
+    const codeMap = new Map();
+    invites.forEach(inv => codeMap.set(inv.code, inv.uses));
+    inviteCache.set(GUILD_ID, codeMap);
+    console.log(`[Referrals] Cached ${codeMap.size} invite codes`);
+  } catch (err) {
+    console.error('[Referrals] Failed to cache invites on ready:', err.message);
+  }
 });
 
 // ===== NEW MEMBER =====
 client.on('guildMemberAdd', async member => {
   try {
+    // --- Referral detection: diff invite uses against the cache ---
+    try {
+      const guild = member.guild;
+      const newInvites = await guild.invites.fetch();
+      const oldCodeMap = inviteCache.get(guild.id) || new Map();
+      let usedInvite = null;
+
+      for (const inv of newInvites.values()) {
+        const oldUses = oldCodeMap.get(inv.code) || 0;
+        if (inv.uses > oldUses) {
+          usedInvite = inv;
+          break;
+        }
+      }
+
+      // refresh cache regardless of whether we found a match
+      const refreshedMap = new Map();
+      newInvites.forEach(inv => refreshedMap.set(inv.code, inv.uses));
+      inviteCache.set(guild.id, refreshedMap);
+
+      if (usedInvite && usedInvite.inviter && usedInvite.inviter.id !== member.id) {
+        await db.collection('referrals').insertOne({
+          inviterId: usedInvite.inviter.id,
+          inviteeId: member.id,
+          inviteeUsername: member.user.username,
+          inviteCode: usedInvite.code,
+          firstPostBonusPaid: false,
+          bonus500kPaid: false,
+          createdAt: new Date(),
+        });
+        console.log(`[Referrals] ${member.user.username} was invited by ${usedInvite.inviter.username} (code ${usedInvite.code})`);
+      }
+    } catch (err) {
+      console.error('[Referrals] Invite detection error:', err.message);
+    }
+
     const channel = await client.channels.fetch(ONBOARDING_CHANNEL_ID);
     const msg = await channel.send({
       content: `👋 Welcome! Please complete the onboarding below to get access to the server.`,
@@ -392,6 +468,17 @@ client.on('guildMemberAdd', async member => {
   } catch (err) {
     console.error('guildMemberAdd error:', err.message);
   }
+});
+
+// ===== INVITE CREATE/DELETE: keep cache fresh =====
+client.on('inviteCreate', invite => {
+  const map = inviteCache.get(invite.guild.id) || new Map();
+  map.set(invite.code, invite.uses);
+  inviteCache.set(invite.guild.id, map);
+});
+client.on('inviteDelete', invite => {
+  const map = inviteCache.get(invite.guild.id);
+  if (map) map.delete(invite.code);
 });
 
 // ===== BUILD: MY SUBMISSIONS EMBED =====
@@ -1165,6 +1252,36 @@ client.on('interactionCreate', async interaction => {
             `👤 <@${sub.userId}>\n🎬 ${sub.clipName}\n🔗 <${normalizeUrl(sub.link)}>\n📊 Status: ${newStatus}`,
           components: [],
         });
+
+        // --- Referral: $5 first-post bonus (fires once ever, on the invitee's first approval) ---
+        if (isApproved) {
+          try {
+            const priorApproved = await db.collection('submissions').countDocuments({
+              userId: sub.userId,
+              status: 'Approved ✅',
+              _id: { $ne: sub._id },
+            });
+            if (priorApproved === 0) {
+              const referral = await db.collection('referrals').findOne({
+                inviteeId: sub.userId,
+                firstPostBonusPaid: false,
+              });
+              if (referral) {
+                await db.collection('referrals').updateOne(
+                  { _id: referral._id },
+                  { $set: { firstPostBonusPaid: true, firstPostBonusAt: new Date() } }
+                );
+                const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+                await logChannel.send(
+                  `🔗 **Referral bonus:** <@${referral.inviterId}> referred <@${sub.userId}>, who just posted their first approved edit on **${sub.campaignLabel}**.\n` +
+                  `💵 <@${referral.inviterId}> earns **$${REFERRAL_FIRST_POST_BONUS}**.`
+                );
+              }
+            }
+          } catch (err) {
+            console.error('[Referrals] First-post bonus error:', err.message);
+          }
+        }
         try {
           const user = await client.users.fetch(sub.userId);
           const embed = new EmbedBuilder()
