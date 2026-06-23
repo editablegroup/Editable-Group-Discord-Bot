@@ -1634,9 +1634,12 @@ client.on('interactionCreate', async interaction => {
       try {
         await interaction.user.send(
           '📷 **Demographics submission**\n\n' +
+          '⚠️ **IMPORTANT — READ THIS FIRST** ⚠️\n' +
+          'At the top of your Analytics, change **"Last 7 days"** to **"Last 60 days"** BEFORE screenshotting. ' +
+          'If you leave it on 7 days the data is too small to be useful and we\'ll have to ask you to redo it. 🛑\n\n' +
           'I\'ll collect three screenshots, one at a time. Let\'s start.\n\n' +
           '**Step 1 of 3 — Gender**\nPlease send your **Gender** screenshot now.\n\n' +
-          '_(TikTok app → Profile → ☰ → Creator Tools → Analytics → Viewers tab → Gender)_'
+          '_(TikTok app → Profile → ☰ → Creator Tools → Analytics → Viewers tab → set to Last 60 days → Gender)_'
         );
         demographicsPending[interaction.user.id] = { step: 'gender' };
         setTimeout(() => { delete demographicsPending[interaction.user.id]; }, 15 * 60 * 1000);
