@@ -440,6 +440,27 @@ const commands = [
     .setName('demographicspanel')
     .setDescription('Post the demographics submission panel in #demographics — owner only')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+  new SlashCommandBuilder()
+    .setName('setpayment')
+    .setDescription('Add or update an editor\'s payment details — owner only')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addUserOption(opt =>
+      opt.setName('user').setDescription('The editor').setRequired(true)
+    )
+    .addStringOption(opt =>
+      opt.setName('method').setDescription('Payment method').setRequired(true)
+        .addChoices(
+          { name: 'PayPal', value: 'paypal' },
+          { name: 'Bank Transfer', value: 'bank' },
+        )
+    )
+    .addStringOption(opt =>
+      opt.setName('paypal_email').setDescription('PayPal email (required if method is PayPal)').setRequired(false)
+    )
+    .addStringOption(opt =>
+      opt.setName('tiktok').setDescription('TikTok profile URL (optional)').setRequired(false)
+    ),
 ];
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -1210,6 +1231,45 @@ client.on('interactionCreate', async interaction => {
     await interaction.deferReply({ ephemeral: true });
     await updateAllStats(true);
     return interaction.editReply({ content: '✅ Stats updated.' });
+  }
+
+  // ── /setpayment ─────────────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'setpayment') {
+    if (!isOwner(interaction.user.id))
+      return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const target = interaction.options.getUser('user');
+      const method = interaction.options.getString('method');
+      const paypalEmail = interaction.options.getString('paypal_email');
+      const tiktok = interaction.options.getString('tiktok');
+
+      if (method === 'paypal' && !paypalEmail)
+        return interaction.editReply({ content: '❌ You chose PayPal but didn\'t provide a PayPal email. Please run the command again with the `paypal_email` field filled in.' });
+
+      const setFields = {
+        userId: target.id,
+        username: target.username,
+        paymentMethod: method,
+        paypalEmail: method === 'paypal' ? paypalEmail : null,
+        updatedAt: new Date(),
+      };
+      if (tiktok) setFields.tiktok = tiktok;
+
+      await db.collection('editors').updateOne(
+        { userId: target.id },
+        { $set: setFields, $setOnInsert: { joinedAt: new Date() } },
+        { upsert: true }
+      );
+
+      const paymentStr = method === 'paypal' ? `PayPal — ${paypalEmail}` : 'Bank Transfer';
+      return interaction.editReply({
+        content: `✅ Saved payment details for <@${target.id}>:\n💳 ${paymentStr}${tiktok ? `\n🎵 TikTok: ${tiktok}` : ''}`,
+      });
+    } catch (err) {
+      console.error('setpayment error:', err);
+      return interaction.editReply({ content: '❌ Failed to save payment details.' });
+    }
   }
 
   // ── /dashboard ────────────────────────────────────────────────────────────
