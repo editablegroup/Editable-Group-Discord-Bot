@@ -533,7 +533,7 @@ client.on('inviteDelete', invite => {
 client.on('messageCreate', async message => {
   try {
     if (message.author.bot) return;
-    if (message.channel.type !== 1) return; // 1 = DM channel
+    if (message.channel.type !== ChannelType.DM) return;
 
     // ---- (A) OWNER is typing in the numbers for an editor ----
     if (message.author.id === OWNER_ID && demographicsEntry[OWNER_ID]) {
