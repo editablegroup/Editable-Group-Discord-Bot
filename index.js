@@ -16,6 +16,7 @@ const {
   ChannelType,
   PermissionFlagsBits,
   Partials,
+  AttachmentBuilder,
 } = require('discord.js');
 const { MongoClient, ObjectId } = require('mongodb');
 
@@ -639,11 +640,19 @@ client.on('messageCreate', async message => {
         `Below: Gender, Age, Locations. Click the button to type in the numbers.`
       );
       for (const step of DEMO_STEPS) {
-        const e = new EmbedBuilder()
-          .setColor(0x1a3fb0)
-          .setTitle(`${DEMO_STEP_LABELS[step]} — @${message.author.username}`)
-          .setImage(pending[step]);
-        await owner.send({ embeds: [e] });
+        try {
+          const res = await fetch(pending[step]);
+          const arrayBuf = await res.arrayBuffer();
+          const buffer = Buffer.from(arrayBuf);
+          const file = new AttachmentBuilder(buffer, { name: `${step}_${message.author.username}.png` });
+          await owner.send({
+            content: `**${DEMO_STEP_LABELS[step]} — @${message.author.username}**`,
+            files: [file],
+          });
+        } catch (imgErr) {
+          // fallback to the raw link if download fails
+          await owner.send(`**${DEMO_STEP_LABELS[step]} — @${message.author.username}**\n${pending[step]}`);
+        }
       }
       await owner.send({
         components: [new ActionRowBuilder().addComponents(
