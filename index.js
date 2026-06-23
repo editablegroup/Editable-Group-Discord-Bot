@@ -569,26 +569,70 @@ client.on('messageCreate', async message => {
         delete demographicsEntry[OWNER_ID];
         return message.reply('❌ Cancelled. No data saved.').catch(() => {});
       }
-      // Expecting: topCountry | usPercent | topAge | malePercent
-      const parts = text.split('|').map(p => p.trim());
-      if (parts.length < 4) {
+
+      // Expected format (3 lines):
+      // GENDER: Male 75, Female 24, Other 1
+      // AGE: 18-24 43, 25-34 39.4, 35-44 9.6
+      // COUNTRIES: Turkiye 7.5, UK 6, US 5.2, Germany 4.7, ...
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      const getLine = (key) => {
+        const line = lines.find(l => l.toLowerCase().startsWith(key));
+        if (!line) return null;
+        return line.slice(line.indexOf(':') + 1).trim();
+      };
+      // parse "Name 12.3, Name2 4.5" into [{name, percent}]
+      const parsePairs = (str) => {
+        if (!str) return [];
+        return str.split(',').map(seg => {
+          const m = seg.trim().match(/^(.+?)\s+([\d.]+)%?$/);
+          if (!m) return null;
+          return { name: m[1].trim(), percent: parseFloat(m[2]) || 0 };
+        }).filter(Boolean);
+      };
+
+      const genderStr = getLine('gender');
+      const ageStr = getLine('age');
+      const countriesStr = getLine('countries') || getLine('country') || getLine('locations');
+
+      if (!genderStr && !ageStr && !countriesStr) {
         return message.reply(
-          '⚠️ Format not recognised. Please send as:\n' +
-          '`TopCountry | US% | TopAgeBracket | Male%`\n' +
-          'Example: `United States | 26.5 | 18-24 | 75`\n' +
-          'Or type `cancel` to stop.'
+          '⚠️ Format not recognised. Send three lines like this:\n' +
+          '```\nGENDER: Male 75, Female 24, Other 1\n' +
+          'AGE: 18-24 43, 25-34 39.4, 35-44 9.6, 45-54 4.6, 55+ 3.4\n' +
+          'COUNTRIES: Turkiye 7.5, UK 6, US 5.2, Germany 4.7, Saudi Arabia 4.5\n```' +
+          'You can list as many countries as you like. Type `cancel` to stop.'
         ).catch(() => {});
       }
-      const [topCountry, usPercent, topAge, malePercent] = parts;
+
+      const genders = parsePairs(genderStr);
+      const ages = parsePairs(ageStr);
+      const countries = parsePairs(countriesStr);
+
+      // derive quick-reference fields for aggregates
+      const findPct = (arr, ...names) => {
+        for (const n of names) {
+          const hit = arr.find(p => p.name.toLowerCase() === n.toLowerCase());
+          if (hit) return hit.percent;
+        }
+        return 0;
+      };
+      const usPercent = findPct(countries, 'us', 'usa', 'united states', 'united states of america');
+      const malePercent = findPct(genders, 'male', 'men', 'm');
+      const topCountry = countries.length ? countries.slice().sort((a, b) => b.percent - a.percent)[0].name : null;
+      const topAge = ages.length ? ages.slice().sort((a, b) => b.percent - a.percent)[0].name : null;
+
       await db.collection('editors').updateOne(
         { userId: entry.editorId },
         {
           $set: {
             demographicsData: {
+              genders,
+              ages,
+              countries,
+              usPercent,
+              malePercent,
               topCountry,
-              usPercent: parseFloat(usPercent) || 0,
               topAge,
-              malePercent: parseFloat(malePercent) || 0,
               enteredAt: new Date(),
             },
           },
@@ -597,9 +641,15 @@ client.on('messageCreate', async message => {
         { upsert: true }
       );
       delete demographicsEntry[OWNER_ID];
+
+      const countrySummary = countries.length
+        ? countries.slice().sort((a, b) => b.percent - a.percent).map(c => `${c.name} ${c.percent}%`).join(', ')
+        : '—';
       return message.reply(
         `✅ Saved demographics for <@${entry.editorId}>:\n` +
-        `🌍 Top country: **${topCountry}** · 🇺🇸 US: **${usPercent}%** · 🎂 Top age: **${topAge}** · 👤 Male: **${malePercent}%**`
+        `👤 Gender: ${genders.map(g => `${g.name} ${g.percent}%`).join(', ') || '—'}\n` +
+        `🎂 Age: ${ages.map(a => `${a.name} ${a.percent}%`).join(', ') || '—'}\n` +
+        `🌍 Countries: ${countrySummary}`
       ).catch(() => {});
     }
 
@@ -1325,14 +1375,24 @@ client.on('interactionCreate', async interaction => {
         ? (withData.reduce((a, e) => a + (e.demographicsData.usPercent || 0), 0) / withData.length).toFixed(1)
         : '—';
       const majorityUs = withData.filter(e => (e.demographicsData.usPercent || 0) >= 50).length;
-      const topCountryTally = {};
+
+      // network-wide country reach: average % across editors who have data
+      const countrySum = {};
       withData.forEach(e => {
-        const c = e.demographicsData.topCountry;
-        if (c) topCountryTally[c] = (topCountryTally[c] || 0) + 1;
+        (e.demographicsData.countries || []).forEach(c => {
+          countrySum[c.name] = (countrySum[c.name] || 0) + (c.percent || 0);
+        });
       });
-      const commonCountry = Object.entries(topCountryTally).sort((a, b) => b[1] - a[1])[0];
+      const topCountriesNetwork = Object.entries(countrySum)
+        .map(([name, sum]) => [name, sum / withData.length])
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([name, avg]) => `${name} ${avg.toFixed(1)}%`)
+        .join(', ');
+
       const audienceLine = withData.length
-        ? `Editors with data: **${dataCount}**\nAvg US audience: **${avgUs}%**\nMajority-US editors: **${majorityUs}**\nMost common top country: **${commonCountry ? commonCountry[0] : '—'}**`
+        ? `Editors with data: **${dataCount}**\nAvg US audience: **${avgUs}%**\nMajority-US editors: **${majorityUs}**\n` +
+          `Top countries across network (avg): **${topCountriesNetwork || '—'}**`
         : `No demographic numbers entered yet.`;
 
       const embed = new EmbedBuilder()
@@ -1393,9 +1453,16 @@ client.on('interactionCreate', async interaction => {
           { name: '🔗 Referrals made', value: `**${referralsMade}**`, inline: true },
           { name: '🙋 Referred by', value: wasReferredBy ? `<@${wasReferredBy.inviterId}>` : 'Nobody', inline: true },
           { name: '📷 Demographics', value: profile?.demographicsImages ? '✅ Screenshots on file' : '❌ Not submitted', inline: true },
-          { name: '🌍 Audience data', value: profile?.demographicsData
-              ? `Top country: **${profile.demographicsData.topCountry}**\nUS: **${profile.demographicsData.usPercent}%** · Top age: **${profile.demographicsData.topAge}** · Male: **${profile.demographicsData.malePercent}%**`
-              : 'Not entered yet', inline: false },
+          { name: '🌍 Audience data', value: (() => {
+              const d = profile?.demographicsData;
+              if (!d) return 'Not entered yet';
+              const g = (d.genders || []).map(x => `${x.name} ${x.percent}%`).join(', ') || '—';
+              const a = (d.ages || []).map(x => `${x.name} ${x.percent}%`).join(', ') || '—';
+              const c = (d.countries || []).slice().sort((x, y) => y.percent - x.percent).map(x => `${x.name} ${x.percent}%`).join(', ') || '—';
+              let out = `**Gender:** ${g}\n**Age:** ${a}\n**Countries:** ${c}`;
+              if (out.length > 1024) out = out.slice(0, 1015) + '…';
+              return out;
+            })(), inline: false },
         );
       if (profile?.demographicsImages?.locations) embed.setImage(profile.demographicsImages.locations);
 
@@ -1593,10 +1660,11 @@ client.on('interactionCreate', async interaction => {
       setTimeout(() => { if (demographicsEntry[OWNER_ID]?.editorId === editorId) delete demographicsEntry[OWNER_ID]; }, 15 * 60 * 1000);
       return interaction.reply({
         content:
-          `✍️ Reading the screenshots above, reply in this DM with the numbers for <@${editorId}> in this format:\n` +
-          '`TopCountry | US% | TopAgeBracket | Male%`\n' +
-          'Example: `United States | 26.5 | 18-24 | 75`\n\n' +
-          'Type `cancel` to stop.',
+          `✍️ Reading the screenshots above, reply in this DM with the numbers for <@${editorId}> using **three lines** like this:\n` +
+          '```\nGENDER: Male 75, Female 24, Other 1\n' +
+          'AGE: 18-24 43, 25-34 39.4, 35-44 9.6, 45-54 4.6, 55+ 3.4\n' +
+          'COUNTRIES: Turkiye 7.5, UK 6, US 5.2, Germany 4.7, Saudi Arabia 4.5, Australia 4.2\n```' +
+          'List as many countries as the screenshot shows. Type `cancel` to stop.',
         ephemeral: false,
       });
     }
