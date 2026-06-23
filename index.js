@@ -43,6 +43,31 @@ const demographicsEntry = {};
 const DEMO_STEPS = ['gender', 'age', 'locations'];
 const DEMO_STEP_LABELS = { gender: 'Gender', age: 'Age', locations: 'Locations' };
 
+// Europe set for bucketing audience countries (lowercased, includes common variants)
+const EUROPE_COUNTRIES = new Set([
+  'united kingdom','uk','great britain','britain','england','scotland','wales','northern ireland',
+  'ireland','france','germany','spain','italy','portugal','netherlands','holland','belgium',
+  'luxembourg','switzerland','austria','poland','czechia','czech republic','slovakia','hungary',
+  'romania','bulgaria','greece','croatia','slovenia','serbia','bosnia','bosnia and herzegovina',
+  'montenegro','north macedonia','macedonia','albania','kosovo','denmark','sweden','norway',
+  'finland','iceland','estonia','latvia','lithuania','ukraine','belarus','moldova','russia',
+  'turkiye','turkey','türkiye','cyprus','malta','monaco','andorra','liechtenstein','san marino',
+  'vatican city','vatican',
+]);
+
+// Bucket a list of {name, percent} country objects into US / Europe / Other totals
+function bucketRegions(countries = []) {
+  let us = 0, europe = 0, other = 0;
+  for (const c of countries) {
+    const n = (c.name || '').trim().toLowerCase();
+    const p = c.percent || 0;
+    if (['us','usa','united states','united states of america','america'].includes(n)) us += p;
+    else if (EUROPE_COUNTRIES.has(n)) europe += p;
+    else other += p;
+  }
+  return { us, europe, other };
+}
+
 function isOwner(userId) {
   return userId === OWNER_ID || userId === ROCA_ID;
 }
@@ -1376,23 +1401,26 @@ client.on('interactionCreate', async interaction => {
         : '—';
       const majorityUs = withData.filter(e => (e.demographicsData.usPercent || 0) >= 50).length;
 
-      // network-wide country reach: average % across editors who have data
-      const countrySum = {};
+      // network-wide US / Europe reach: average across editors who have data
+      let usAvgSum = 0, euAvgSum = 0;
       withData.forEach(e => {
-        (e.demographicsData.countries || []).forEach(c => {
-          countrySum[c.name] = (countrySum[c.name] || 0) + (c.percent || 0);
-        });
+        const { us, europe } = bucketRegions(e.demographicsData.countries || []);
+        usAvgSum += us;
+        euAvgSum += europe;
       });
-      const topCountriesNetwork = Object.entries(countrySum)
-        .map(([name, sum]) => [name, sum / withData.length])
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5)
-        .map(([name, avg]) => `${name} ${avg.toFixed(1)}%`)
-        .join(', ');
+      const avgUsRegion = withData.length ? (usAvgSum / withData.length).toFixed(1) : '0';
+      const avgEuRegion = withData.length ? (euAvgSum / withData.length).toFixed(1) : '0';
+      // editors whose audience is majority US+Europe (Lionsgate's target)
+      const targetEditors = withData.filter(e => {
+        const { us, europe } = bucketRegions(e.demographicsData.countries || []);
+        return (us + europe) >= 50;
+      }).length;
 
       const audienceLine = withData.length
-        ? `Editors with data: **${dataCount}**\nAvg US audience: **${avgUs}%**\nMajority-US editors: **${majorityUs}**\n` +
-          `Top countries across network (avg): **${topCountriesNetwork || '—'}**`
+        ? `Editors with data: **${dataCount}**\n` +
+          `Avg US audience: **${avgUsRegion}%**\n` +
+          `Avg Europe audience: **${avgEuRegion}%**\n` +
+          `Editors with majority US+Europe audience: **${targetEditors}**`
         : `No demographic numbers entered yet.`;
 
       const embed = new EmbedBuilder()
@@ -1458,10 +1486,9 @@ client.on('interactionCreate', async interaction => {
               if (!d) return 'Not entered yet';
               const g = (d.genders || []).map(x => `${x.name} ${x.percent}%`).join(', ') || '—';
               const a = (d.ages || []).map(x => `${x.name} ${x.percent}%`).join(', ') || '—';
-              const c = (d.countries || []).slice().sort((x, y) => y.percent - x.percent).map(x => `${x.name} ${x.percent}%`).join(', ') || '—';
-              let out = `**Gender:** ${g}\n**Age:** ${a}\n**Countries:** ${c}`;
-              if (out.length > 1024) out = out.slice(0, 1015) + '…';
-              return out;
+              const { us, europe, other } = bucketRegions(d.countries || []);
+              const region = `🇺🇸 US ${us.toFixed(1)}% · 🇪🇺 Europe ${europe.toFixed(1)}% · 🌍 Other ${other.toFixed(1)}%`;
+              return `**Gender:** ${g}\n**Age:** ${a}\n**Region:** ${region}`;
             })(), inline: false },
         );
       if (profile?.demographicsImages?.locations) embed.setImage(profile.demographicsImages.locations);
@@ -1635,7 +1662,7 @@ client.on('interactionCreate', async interaction => {
         await interaction.user.send(
           '📷 **Demographics submission**\n\n' +
           '⚠️ **IMPORTANT — READ THIS FIRST** ⚠️\n' +
-          'At the top of your Analytics, change **"Last 7 days"** to **"Last 60 days"** BEFORE screenshotting. ' +
+          'At the top of your Analytics, tap **"Last 7 days"** and change it to **"Last 60 days"** BEFORE screenshotting. ' +
           'If you leave it on 7 days the data is too small to be useful and we\'ll have to ask you to redo it. 🛑\n\n' +
           'I\'ll collect three screenshots, one at a time. Let\'s start.\n\n' +
           '**Step 1 of 3 — Gender**\nPlease send your **Gender** screenshot now.\n\n' +
