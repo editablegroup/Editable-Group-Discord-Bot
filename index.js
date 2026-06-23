@@ -33,6 +33,8 @@ const ONBOARDING_CHANNEL_ID = '1508909360510795837';
 const LOG_CHANNEL_ID = '1505978732010274846';
 const EDITOR_ROLE_ID = '1437195425819131915';
 const ACTIVE_CAMPAIGNS_CHANNEL_ID = '1506778321969746092';
+const DEMOGRAPHICS_CHANNEL_ID = '1519022400828739604';
+const demographicsPending = {}; // userId -> true while waiting for an image upload
 
 function isOwner(userId) {
   return userId === OWNER_ID || userId === ROCA_ID;
@@ -232,6 +234,27 @@ async function completeOnboarding(interaction, state) {
   const member = await interaction.guild.members.fetch(interaction.user.id);
   await member.roles.add(EDITOR_ROLE_ID);
 
+  // Persist editor profile so it can be queried later (dashboard, /editor lookup)
+  try {
+    await db.collection('editors').updateOne(
+      { userId: interaction.user.id },
+      {
+        $set: {
+          userId: interaction.user.id,
+          username: interaction.user.username,
+          tiktok: state.tiktok || null,
+          paymentMethod: state.payment || null,
+          paypalEmail: state.payment === 'paypal' ? (state.paypalEmail || null) : null,
+          updatedAt: new Date(),
+        },
+        $setOnInsert: { joinedAt: new Date() },
+      },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error('[Editors] Failed to persist profile:', err.message);
+  }
+
   if (state.welcomeMessageId) {
     try {
       const onboardingChannel = await client.channels.fetch(ONBOARDING_CHANNEL_ID);
@@ -282,6 +305,8 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildInvites,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
   ]
 });
 const pendingCampaign = {};
@@ -388,6 +413,24 @@ const commands = [
     .setName('updatestats')
     .setDescription('Manually trigger a TikTok stats update — owner only')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+  new SlashCommandBuilder()
+    .setName('dashboard')
+    .setDescription('Full operational overview — owner only')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+  new SlashCommandBuilder()
+    .setName('editor')
+    .setDescription('Look up a single editor profile — owner only')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addUserOption(opt =>
+      opt.setName('user').setDescription('The editor to look up').setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('demographicspanel')
+    .setDescription('Post the demographics submission panel in #demographics — owner only')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ];
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -479,6 +522,56 @@ client.on('inviteCreate', invite => {
 client.on('inviteDelete', invite => {
   const map = inviteCache.get(invite.guild.id);
   if (map) map.delete(invite.code);
+});
+
+// ===== DEMOGRAPHICS IMAGE CAPTURE =====
+client.on('messageCreate', async message => {
+  try {
+    if (message.author.bot) return;
+    if (message.channel.id !== DEMOGRAPHICS_CHANNEL_ID) return;
+    if (!demographicsPending[message.author.id]) return;
+
+    const image = message.attachments.find(a =>
+      (a.contentType && a.contentType.startsWith('image/')) ||
+      /\.(png|jpe?g|webp|gif)$/i.test(a.name || '')
+    );
+    if (!image) return; // ignore non-image messages while pending
+
+    delete demographicsPending[message.author.id];
+
+    // store the image URL on the editor profile
+    await db.collection('editors').updateOne(
+      { userId: message.author.id },
+      {
+        $set: {
+          userId: message.author.id,
+          username: message.author.username,
+          demographicsImage: image.url,
+          demographicsSubmittedAt: new Date(),
+        },
+        $setOnInsert: { joinedAt: new Date() },
+      },
+      { upsert: true }
+    );
+
+    // log it for the team
+    try {
+      const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+      const logEmbed = new EmbedBuilder()
+        .setColor(0x1a3fb0)
+        .setTitle('📷 Demographics submitted')
+        .setDescription(`<@${message.author.id}> (@${message.author.username})`)
+        .setImage(image.url)
+        .setTimestamp();
+      await logChannel.send({ embeds: [logEmbed] });
+    } catch (err) {
+      console.error('[Demographics] Log error:', err.message);
+    }
+
+    await message.reply({ content: '✅ Got it — your demographics have been saved. Thank you!' }).catch(() => {});
+  } catch (err) {
+    console.error('[Demographics] Capture error:', err.message);
+  }
 });
 
 // ===== BUILD: MY SUBMISSIONS EMBED =====
@@ -1023,6 +1116,150 @@ client.on('interactionCreate', async interaction => {
     return interaction.editReply({ content: '✅ Stats updated.' });
   }
 
+  // ── /dashboard ────────────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'dashboard') {
+    if (!isOwner(interaction.user.id))
+      return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const subs = await db.collection('submissions').find({}).toArray();
+      const editors = await db.collection('editors').find({}).toArray();
+      const referrals = await db.collection('referrals').find({}).toArray();
+      const deductions = await db.collection('deductions').find({}).toArray();
+
+      const approved = subs.filter(s => s.status === 'Approved ✅');
+      const totalViews = approved.reduce((a, s) => a + (s.views || 0), 0);
+      const totalLikes = approved.reduce((a, s) => a + (s.likes || 0), 0);
+      const totalEarnings = approved.reduce((a, s) => a + (s.earnings || 0), 0);
+      const totalDeducted = deductions.reduce((a, d) => a + (d.amount || 0), 0);
+
+      const now = new Date();
+      const activeCampaigns = CAMPAIGNS.filter(c => c.endDate >= now);
+
+      // top editors by approved views
+      const byEditor = {};
+      for (const s of approved) {
+        if (!byEditor[s.userId]) byEditor[s.userId] = { username: s.username, views: 0, posts: 0 };
+        byEditor[s.userId].views += (s.views || 0);
+        byEditor[s.userId].posts += 1;
+      }
+      const topEditors = Object.entries(byEditor)
+        .sort((a, b) => b[1].views - a[1].views)
+        .slice(0, 5)
+        .map(([id, e], i) => `${i + 1}. <@${id}> — ${e.views.toLocaleString()} views (${e.posts} posts)`)
+        .join('\n') || 'No approved posts yet.';
+
+      // per-campaign breakdown
+      const campaignLines = CAMPAIGNS.map(c => {
+        const cSubs = approved.filter(s => s.campaignValue === c.value);
+        const cViews = cSubs.reduce((a, s) => a + (s.views || 0), 0);
+        const status = c.endDate >= now ? '🟢' : '🔴';
+        return `${status} **${c.label}** — ${cSubs.length} posts · ${cViews.toLocaleString()} views`;
+      }).join('\n');
+
+      const demoCount = editors.filter(e => e.demographicsImage).length;
+      const paypalCount = editors.filter(e => e.paypalEmail).length;
+      const referralsPaid = referrals.filter(r => r.firstPostBonusPaid).length;
+      const referrals500k = referrals.filter(r => r.bonus500kPaid).length;
+
+      const embed = new EmbedBuilder()
+        .setColor(0x1a3fb0)
+        .setTitle('📊 Editable Group — Dashboard')
+        .addFields(
+          { name: '👥 Editors', value:
+            `Onboarded: **${editors.length}**\nPayPal on file: **${paypalCount}**\nDemographics submitted: **${demoCount}**`, inline: true },
+          { name: '📈 Performance', value:
+            `Approved posts: **${approved.length}**\nTotal views: **${totalViews.toLocaleString()}**\nTotal likes: **${totalLikes.toLocaleString()}**`, inline: true },
+          { name: '💰 Money', value:
+            `Earnings accrued: **$${totalEarnings.toFixed(2)}**\nDeductions: **$${totalDeducted.toFixed(2)}**`, inline: true },
+          { name: '🎯 Campaigns', value: campaignLines || 'None', inline: false },
+          { name: '🏆 Top Editors (by views)', value: topEditors, inline: false },
+          { name: '🔗 Referrals', value:
+            `Total tracked: **${referrals.length}**\n$5 bonuses paid: **${referralsPaid}**\n$50 bonuses paid: **${referrals500k}**`, inline: true },
+          { name: '🟢 Active Campaigns', value: `**${activeCampaigns.length}** running now`, inline: true },
+        )
+        .setFooter({ text: `Generated ${dateStr(now)}` });
+
+      return interaction.editReply({ embeds: [embed] });
+    } catch (err) {
+      console.error('dashboard error:', err);
+      return interaction.editReply({ content: '❌ Failed to build dashboard.' });
+    }
+  }
+
+  // ── /editor ───────────────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'editor') {
+    if (!isOwner(interaction.user.id))
+      return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const target = interaction.options.getUser('user');
+      const profile = await db.collection('editors').findOne({ userId: target.id });
+      const subs = await db.collection('submissions').find({ userId: target.id }).toArray();
+      const approved = subs.filter(s => s.status === 'Approved ✅');
+      const totalViews = approved.reduce((a, s) => a + (s.views || 0), 0);
+      const totalEarnings = approved.reduce((a, s) => a + (s.earnings || 0), 0);
+      const referralsMade = await db.collection('referrals').countDocuments({ inviterId: target.id });
+      const wasReferredBy = await db.collection('referrals').findOne({ inviteeId: target.id });
+
+      const embed = new EmbedBuilder()
+        .setColor(0x1a3fb0)
+        .setTitle(`👤 ${target.username}`)
+        .setThumbnail(target.displayAvatarURL())
+        .addFields(
+          { name: '🎵 TikTok', value: profile?.tiktok || 'Not on file', inline: false },
+          { name: '💳 Payment', value: profile?.paypalEmail
+              ? `PayPal — ${profile.paypalEmail}`
+              : (profile?.paymentMethod === 'bank' ? 'Bank Transfer' : 'Not on file'), inline: true },
+          { name: '📅 Joined', value: profile?.joinedAt ? dateStr(profile.joinedAt) : 'Unknown', inline: true },
+          { name: '📊 Submissions', value:
+            `Total: **${subs.length}**\nApproved: **${approved.length}**`, inline: true },
+          { name: '📈 Views (approved)', value: `**${totalViews.toLocaleString()}**`, inline: true },
+          { name: '💰 Earnings', value: `**$${totalEarnings.toFixed(2)}**`, inline: true },
+          { name: '🔗 Referrals made', value: `**${referralsMade}**`, inline: true },
+          { name: '🙋 Referred by', value: wasReferredBy ? `<@${wasReferredBy.inviterId}>` : 'Nobody', inline: true },
+          { name: '📷 Demographics', value: profile?.demographicsImage ? '✅ Submitted' : '❌ Not submitted', inline: true },
+        );
+      if (profile?.demographicsImage) embed.setImage(profile.demographicsImage);
+
+      return interaction.editReply({ embeds: [embed] });
+    } catch (err) {
+      console.error('editor lookup error:', err);
+      return interaction.editReply({ content: '❌ Failed to look up editor.' });
+    }
+  }
+
+  // ── /demographicspanel ─────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'demographicspanel') {
+    if (!isOwner(interaction.user.id))
+      return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
+    try {
+      const channel = await client.channels.fetch(DEMOGRAPHICS_CHANNEL_ID);
+      const embed = new EmbedBuilder()
+        .setColor(0x1a3fb0)
+        .setTitle('📷 Submit Your Audience Demographics')
+        .setDescription(
+          'Help us land bigger campaigns by sharing your TikTok audience demographics.\n\n' +
+          '**How to find it:** TikTok app → Profile → ☰ menu → **Creator Tools** → **Analytics** → **Viewers** tab. Screenshot the age, gender and location breakdown.\n\n' +
+          'Click the button below, then upload your screenshot when prompted. This is only visible to the Editable Group team.'
+        );
+      await channel.send({
+        embeds: [embed],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('submit_demographics')
+            .setLabel('📷 Submit Demographics')
+            .setStyle(ButtonStyle.Primary)
+        )],
+      });
+      return interaction.reply({ content: '✅ Demographics panel posted.', ephemeral: true });
+    } catch (err) {
+      console.error('demographicspanel error:', err);
+      if (!interaction.replied && !interaction.deferred)
+        await interaction.reply({ content: '❌ Something went wrong.', ephemeral: true }).catch(() => {});
+    }
+  }
+
   // ── /close ────────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'close') {
     try {
@@ -1149,6 +1386,16 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
+    if (interaction.customId === 'submit_demographics') {
+      demographicsPending[interaction.user.id] = true;
+      // auto-expire the pending state after 5 minutes
+      setTimeout(() => { delete demographicsPending[interaction.user.id]; }, 5 * 60 * 1000);
+      return interaction.reply({
+        content: '📷 Please upload your TikTok demographics screenshot **as an image in this channel** within the next 5 minutes. I\'ll grab it automatically and confirm.',
+        ephemeral: true,
+      });
+    }
+
     if (interaction.customId === 'open_ticket') {
       await interaction.deferReply({ ephemeral: true });
       try {
@@ -1176,8 +1423,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    if (interaction.customId === 'submit_clip') {
-      try {
+    if (interaction.customId === 'submit_clip') {      try {
         const active = CAMPAIGNS.filter(c => new Date() < c.endDate);
         if (active.length === 0)
           return interaction.reply({ content: '❌ There are no active campaigns right now.', ephemeral: true });
