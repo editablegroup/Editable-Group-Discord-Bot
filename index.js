@@ -531,6 +531,7 @@ client.on('inviteDelete', invite => {
 
 // ===== DEMOGRAPHICS: guided collection + owner data entry (DM only) =====
 client.on('messageCreate', async message => {
+  console.log('[DEBUG] messageCreate fired. bot:', message.author.bot, 'channelType:', message.channel?.type, 'from:', message.author.username, 'attachments:', message.attachments.size);
   try {
     if (message.author.bot) return;
     if (message.channel.type !== ChannelType.DM) return;
