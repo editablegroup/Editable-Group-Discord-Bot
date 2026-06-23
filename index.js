@@ -34,7 +34,12 @@ const LOG_CHANNEL_ID = '1505978732010274846';
 const EDITOR_ROLE_ID = '1437195425819131915';
 const ACTIVE_CAMPAIGNS_CHANNEL_ID = '1506778321969746092';
 const DEMOGRAPHICS_CHANNEL_ID = '1519022400828739604';
-const demographicsPending = {}; // userId -> true while waiting for an image upload
+// editorId -> { step: 'gender'|'age'|'locations', gender?, age?, locations? }  (guided collection)
+const demographicsPending = {};
+// OWNER_ID -> { editorId } while owner is typing in demographic numbers via DM
+const demographicsEntry = {};
+const DEMO_STEPS = ['gender', 'age', 'locations'];
+const DEMO_STEP_LABELS = { gender: 'Gender', age: 'Age', locations: 'Locations' };
 
 function isOwner(userId) {
   return userId === OWNER_ID || userId === ROCA_ID;
@@ -524,29 +529,95 @@ client.on('inviteDelete', invite => {
   if (map) map.delete(invite.code);
 });
 
-// ===== DEMOGRAPHICS IMAGE CAPTURE =====
+// ===== DEMOGRAPHICS: guided collection + owner data entry (DM only) =====
 client.on('messageCreate', async message => {
   try {
     if (message.author.bot) return;
     if (message.channel.type !== 1) return; // 1 = DM channel
-    if (!demographicsPending[message.author.id]) return;
+
+    // ---- (A) OWNER is typing in the numbers for an editor ----
+    if (message.author.id === OWNER_ID && demographicsEntry[OWNER_ID]) {
+      const entry = demographicsEntry[OWNER_ID];
+      const text = message.content.trim();
+      if (text.toLowerCase() === 'cancel') {
+        delete demographicsEntry[OWNER_ID];
+        return message.reply('❌ Cancelled. No data saved.').catch(() => {});
+      }
+      // Expecting: topCountry | usPercent | topAge | malePercent
+      const parts = text.split('|').map(p => p.trim());
+      if (parts.length < 4) {
+        return message.reply(
+          '⚠️ Format not recognised. Please send as:\n' +
+          '`TopCountry | US% | TopAgeBracket | Male%`\n' +
+          'Example: `United States | 26.5 | 18-24 | 75`\n' +
+          'Or type `cancel` to stop.'
+        ).catch(() => {});
+      }
+      const [topCountry, usPercent, topAge, malePercent] = parts;
+      await db.collection('editors').updateOne(
+        { userId: entry.editorId },
+        {
+          $set: {
+            demographicsData: {
+              topCountry,
+              usPercent: parseFloat(usPercent) || 0,
+              topAge,
+              malePercent: parseFloat(malePercent) || 0,
+              enteredAt: new Date(),
+            },
+          },
+          $setOnInsert: { joinedAt: new Date() },
+        },
+        { upsert: true }
+      );
+      delete demographicsEntry[OWNER_ID];
+      return message.reply(
+        `✅ Saved demographics for <@${entry.editorId}>:\n` +
+        `🌍 Top country: **${topCountry}** · 🇺🇸 US: **${usPercent}%** · 🎂 Top age: **${topAge}** · 👤 Male: **${malePercent}%**`
+      ).catch(() => {});
+    }
+
+    // ---- (B) EDITOR is in the guided screenshot flow ----
+    const pending = demographicsPending[message.author.id];
+    if (!pending) return;
 
     const image = message.attachments.find(a =>
       (a.contentType && a.contentType.startsWith('image/')) ||
       /\.(png|jpe?g|webp|gif)$/i.test(a.name || '')
     );
-    if (!image) return; // ignore non-image messages while pending
+    if (!image) {
+      return message.reply(`⚠️ That wasn't an image. Please send your **${DEMO_STEP_LABELS[pending.step]}** screenshot.`).catch(() => {});
+    }
 
+    // store this step's image URL on the pending state
+    pending[pending.step] = image.url;
+    const currentIndex = DEMO_STEPS.indexOf(pending.step);
+    const nextStep = DEMO_STEPS[currentIndex + 1];
+
+    if (nextStep) {
+      pending.step = nextStep;
+      demographicsPending[message.author.id] = pending;
+      const stepNum = currentIndex + 2;
+      return message.reply(
+        `✅ ${DEMO_STEP_LABELS[DEMO_STEPS[currentIndex]]} saved.\n\n` +
+        `**Step ${stepNum} of 3 — ${DEMO_STEP_LABELS[nextStep]}**\nPlease send your **${DEMO_STEP_LABELS[nextStep]}** screenshot now.`
+      ).catch(() => {});
+    }
+
+    // all three collected — persist URLs and forward to owner
     delete demographicsPending[message.author.id];
 
-    // store the image URL on the editor profile
     await db.collection('editors').updateOne(
       { userId: message.author.id },
       {
         $set: {
           userId: message.author.id,
           username: message.author.username,
-          demographicsImage: image.url,
+          demographicsImages: {
+            gender: pending.gender,
+            age: pending.age,
+            locations: pending.locations,
+          },
           demographicsSubmittedAt: new Date(),
         },
         $setOnInsert: { joinedAt: new Date() },
@@ -554,21 +625,33 @@ client.on('messageCreate', async message => {
       { upsert: true }
     );
 
-    // log it for the team
-    try {
-      const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
-      const logEmbed = new EmbedBuilder()
-        .setColor(0x1a3fb0)
-        .setTitle('📷 Demographics submitted')
-        .setDescription(`<@${message.author.id}> (@${message.author.username})`)
-        .setImage(image.url)
-        .setTimestamp();
-      await logChannel.send({ embeds: [logEmbed] });
-    } catch (err) {
-      console.error('[Demographics] Log error:', err.message);
-    }
+    await message.reply('✅ All three saved — thank you! You\'re all set. 🙌').catch(() => {});
 
-    await message.reply({ content: '✅ Got it — your demographics have been saved. Thank you!' }).catch(() => {});
+    // forward the three images to OWNER only, with a button to enter the numbers
+    try {
+      const owner = await client.users.fetch(OWNER_ID);
+      await owner.send(
+        `📷 **New demographics submitted** by <@${message.author.id}> (@${message.author.username})\n` +
+        `Below: Gender, Age, Locations. Click the button to type in the numbers.`
+      );
+      for (const step of DEMO_STEPS) {
+        const e = new EmbedBuilder()
+          .setColor(0x1a3fb0)
+          .setTitle(`${DEMO_STEP_LABELS[step]} — @${message.author.username}`)
+          .setImage(pending[step]);
+        await owner.send({ embeds: [e] });
+      }
+      await owner.send({
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`enter_demographics_${message.author.id}`)
+            .setLabel('✍️ Enter numbers for this editor')
+            .setStyle(ButtonStyle.Primary)
+        )],
+      });
+    } catch (err) {
+      console.error('[Demographics] Owner forward error:', err.message);
+    }
   } catch (err) {
     console.error('[Demographics] Capture error:', err.message);
   }
@@ -1157,10 +1240,27 @@ client.on('interactionCreate', async interaction => {
         return `${status} **${c.label}** — ${cSubs.length} posts · ${cViews.toLocaleString()} views`;
       }).join('\n');
 
-      const demoCount = editors.filter(e => e.demographicsImage).length;
+      const demoCount = editors.filter(e => e.demographicsImages).length;
+      const dataCount = editors.filter(e => e.demographicsData).length;
       const paypalCount = editors.filter(e => e.paypalEmail).length;
       const referralsPaid = referrals.filter(r => r.firstPostBonusPaid).length;
       const referrals500k = referrals.filter(r => r.bonus500kPaid).length;
+
+      // audience aggregates from entered data
+      const withData = editors.filter(e => e.demographicsData);
+      const avgUs = withData.length
+        ? (withData.reduce((a, e) => a + (e.demographicsData.usPercent || 0), 0) / withData.length).toFixed(1)
+        : '—';
+      const majorityUs = withData.filter(e => (e.demographicsData.usPercent || 0) >= 50).length;
+      const topCountryTally = {};
+      withData.forEach(e => {
+        const c = e.demographicsData.topCountry;
+        if (c) topCountryTally[c] = (topCountryTally[c] || 0) + 1;
+      });
+      const commonCountry = Object.entries(topCountryTally).sort((a, b) => b[1] - a[1])[0];
+      const audienceLine = withData.length
+        ? `Editors with data: **${dataCount}**\nAvg US audience: **${avgUs}%**\nMajority-US editors: **${majorityUs}**\nMost common top country: **${commonCountry ? commonCountry[0] : '—'}**`
+        : `No demographic numbers entered yet.`;
 
       const embed = new EmbedBuilder()
         .setColor(0x1a3fb0)
@@ -1177,6 +1277,7 @@ client.on('interactionCreate', async interaction => {
           { name: '🔗 Referrals', value:
             `Total tracked: **${referrals.length}**\n$5 bonuses paid: **${referralsPaid}**\n$50 bonuses paid: **${referrals500k}**`, inline: true },
           { name: '🟢 Active Campaigns', value: `**${activeCampaigns.length}** running now`, inline: true },
+          { name: '🌍 Audience (from entered data)', value: audienceLine, inline: false },
         )
         .setFooter({ text: `Generated ${dateStr(now)}` });
 
@@ -1218,9 +1319,12 @@ client.on('interactionCreate', async interaction => {
           { name: '💰 Earnings', value: `**$${totalEarnings.toFixed(2)}**`, inline: true },
           { name: '🔗 Referrals made', value: `**${referralsMade}**`, inline: true },
           { name: '🙋 Referred by', value: wasReferredBy ? `<@${wasReferredBy.inviterId}>` : 'Nobody', inline: true },
-          { name: '📷 Demographics', value: profile?.demographicsImage ? '✅ Submitted' : '❌ Not submitted', inline: true },
+          { name: '📷 Demographics', value: profile?.demographicsImages ? '✅ Screenshots on file' : '❌ Not submitted', inline: true },
+          { name: '🌍 Audience data', value: profile?.demographicsData
+              ? `Top country: **${profile.demographicsData.topCountry}**\nUS: **${profile.demographicsData.usPercent}%** · Top age: **${profile.demographicsData.topAge}** · Male: **${profile.demographicsData.malePercent}%**`
+              : 'Not entered yet', inline: false },
         );
-      if (profile?.demographicsImage) embed.setImage(profile.demographicsImage);
+      if (profile?.demographicsImages?.locations) embed.setImage(profile.demographicsImages.locations);
 
       return interaction.editReply({ embeds: [embed] });
     } catch (err) {
@@ -1390,14 +1494,14 @@ client.on('interactionCreate', async interaction => {
       try {
         await interaction.user.send(
           '📷 **Demographics submission**\n\n' +
-          'Please upload your TikTok audience demographics screenshot **right here in this DM** within the next 5 minutes. ' +
-          'I\'ll save it automatically and confirm.\n\n' +
-          '_(TikTok app → Profile → ☰ → Creator Tools → Analytics → Viewers tab)_'
+          'I\'ll collect three screenshots, one at a time. Let\'s start.\n\n' +
+          '**Step 1 of 3 — Gender**\nPlease send your **Gender** screenshot now.\n\n' +
+          '_(TikTok app → Profile → ☰ → Creator Tools → Analytics → Viewers tab → Gender)_'
         );
-        demographicsPending[interaction.user.id] = true;
-        setTimeout(() => { delete demographicsPending[interaction.user.id]; }, 5 * 60 * 1000);
+        demographicsPending[interaction.user.id] = { step: 'gender' };
+        setTimeout(() => { delete demographicsPending[interaction.user.id]; }, 15 * 60 * 1000);
         return interaction.reply({
-          content: '📬 Check your DMs — I\'ve messaged you there to collect your screenshot privately.',
+          content: '📬 Check your DMs — I\'ll walk you through sending your three screenshots privately.',
           ephemeral: true,
         });
       } catch (err) {
@@ -1406,6 +1510,22 @@ client.on('interactionCreate', async interaction => {
           ephemeral: true,
         });
       }
+    }
+
+    if (interaction.customId.startsWith('enter_demographics_')) {
+      if (interaction.user.id !== OWNER_ID)
+        return interaction.reply({ content: '❌ Only Cilord can enter demographics data.', ephemeral: true });
+      const editorId = interaction.customId.replace('enter_demographics_', '');
+      demographicsEntry[OWNER_ID] = { editorId };
+      setTimeout(() => { if (demographicsEntry[OWNER_ID]?.editorId === editorId) delete demographicsEntry[OWNER_ID]; }, 15 * 60 * 1000);
+      return interaction.reply({
+        content:
+          `✍️ Reading the screenshots above, reply in this DM with the numbers for <@${editorId}> in this format:\n` +
+          '`TopCountry | US% | TopAgeBracket | Male%`\n' +
+          'Example: `United States | 26.5 | 18-24 | 75`\n\n' +
+          'Type `cancel` to stop.',
+        ephemeral: false,
+      });
     }
 
     if (interaction.customId === 'open_ticket') {
