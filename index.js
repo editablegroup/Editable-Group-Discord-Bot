@@ -528,7 +528,7 @@ client.on('inviteDelete', invite => {
 client.on('messageCreate', async message => {
   try {
     if (message.author.bot) return;
-    if (message.channel.id !== DEMOGRAPHICS_CHANNEL_ID) return;
+    if (message.channel.type !== 1) return; // 1 = DM channel
     if (!demographicsPending[message.author.id]) return;
 
     const image = message.attachments.find(a =>
@@ -1387,13 +1387,25 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (interaction.customId === 'submit_demographics') {
-      demographicsPending[interaction.user.id] = true;
-      // auto-expire the pending state after 5 minutes
-      setTimeout(() => { delete demographicsPending[interaction.user.id]; }, 5 * 60 * 1000);
-      return interaction.reply({
-        content: '📷 Please upload your TikTok demographics screenshot **as an image in this channel** within the next 5 minutes. I\'ll grab it automatically and confirm.',
-        ephemeral: true,
-      });
+      try {
+        await interaction.user.send(
+          '📷 **Demographics submission**\n\n' +
+          'Please upload your TikTok audience demographics screenshot **right here in this DM** within the next 5 minutes. ' +
+          'I\'ll save it automatically and confirm.\n\n' +
+          '_(TikTok app → Profile → ☰ → Creator Tools → Analytics → Viewers tab)_'
+        );
+        demographicsPending[interaction.user.id] = true;
+        setTimeout(() => { delete demographicsPending[interaction.user.id]; }, 5 * 60 * 1000);
+        return interaction.reply({
+          content: '📬 Check your DMs — I\'ve messaged you there to collect your screenshot privately.',
+          ephemeral: true,
+        });
+      } catch (err) {
+        return interaction.reply({
+          content: '❌ I couldn\'t DM you. Please enable **Direct Messages** from server members (Server → Privacy Settings) and try again.',
+          ephemeral: true,
+        });
+      }
     }
 
     if (interaction.customId === 'open_ticket') {
