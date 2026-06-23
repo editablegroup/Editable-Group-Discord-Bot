@@ -14,7 +14,8 @@ const {
   TextInputBuilder,
   TextInputStyle,
   ChannelType,
-  PermissionFlagsBits
+  PermissionFlagsBits,
+  Partials,
 } = require('discord.js');
 const { MongoClient, ObjectId } = require('mongodb');
 
@@ -311,8 +312,10 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildInvites,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.DirectMessages,
     GatewayIntentBits.MessageContent,
-  ]
+  ],
+  partials: [Partials.Channel, Partials.Message],
 });
 const pendingCampaign = {};
 
