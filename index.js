@@ -343,6 +343,14 @@ const client = new Client({
   ],
   partials: [Partials.Channel, Partials.Message],
 });
+
+// ===== GLOBAL CRASH SAFETY =====
+// A single bad Discord API request (e.g. a message over 2000 chars) must never
+// take the whole bot offline. Log and keep running instead of crashing.
+process.on('unhandledRejection', (err) => console.error('[Unhandled Rejection]', err));
+process.on('uncaughtException', (err) => console.error('[Uncaught Exception]', err));
+client.on('error', (err) => console.error('[Client Error]', err));
+
 const pendingCampaign = {};
 
 // ===== REFERRAL CONFIG =====
@@ -837,6 +845,47 @@ async function buildMySubmissionsEmbed(userId) {
   return embed;
 }
 
+// ===== HELPER: split long content into <2000-char chunks (Discord limit) =====
+function splitMessage(text, max = 1900) {
+  const lines = text.split('\n');
+  const chunks = [];
+  let current = '';
+  for (const line of lines) {
+    // if a single line somehow exceeds max, hard-split it
+    if (line.length > max) {
+      if (current) { chunks.push(current); current = ''; }
+      for (let i = 0; i < line.length; i += max) chunks.push(line.slice(i, i + max));
+      continue;
+    }
+    if ((current + line + '\n').length > max) {
+      chunks.push(current);
+      current = '';
+    }
+    current += line + '\n';
+  }
+  if (current.trim()) chunks.push(current);
+  return chunks.length ? chunks : ['*(empty)*'];
+}
+
+// Send a possibly-long string as one or more messages via an interaction.
+// When it spans multiple messages, each gets a "Page X/Y" footer.
+async function replyLong(interaction, text, extra = {}) {
+  const chunks = splitMessage(text);
+  const total = chunks.length;
+  if (total === 1) {
+    return interaction.editReply({ content: chunks[0], ...extra });
+  }
+  for (let i = 0; i < total; i++) {
+    const labelled = chunks[i] + `\n— Page ${i + 1}/${total} —`;
+    const isLast = i === total - 1;
+    if (i === 0) {
+      await interaction.editReply({ content: labelled });
+    } else {
+      await interaction.followUp({ content: labelled, ...(isLast ? extra : {}) });
+    }
+  }
+}
+
 // ===== BUILD: LEADERBOARD =====
 async function buildLeaderboardText(campaignValue) {
   const campaign = CAMPAIGNS.find(c => c.value === campaignValue);
@@ -1043,7 +1092,7 @@ client.on('interactionCreate', async interaction => {
   if (interaction.isChatInputCommand() && interaction.commandName === 'leaderboard') {
     await interaction.deferReply({ ephemeral: false });
     try {
-      return interaction.editReply({ content: await buildLeaderboardText(interaction.options.getString('campaign')) });
+      return await replyLong(interaction, await buildLeaderboardText(interaction.options.getString('campaign')));
     } catch (err) {
       console.error('leaderboard error:', err);
       return interaction.editReply({ content: '❌ Something went wrong.' });
@@ -1056,7 +1105,7 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({ content: '❌ Only Cilord and Roca can use this command.', ephemeral: true });
     await interaction.deferReply({ ephemeral: true });
     try {
-      return interaction.editReply({ content: await buildEarningsText(interaction.options.getString('campaign')) });
+      return await replyLong(interaction, await buildEarningsText(interaction.options.getString('campaign')));
     } catch (err) {
       console.error('earnings error:', err);
       return interaction.editReply({ content: '❌ Something went wrong.' });
@@ -1881,7 +1930,16 @@ client.on('interactionCreate', async interaction => {
       await interaction.deferUpdate();
       try {
         const text = await buildLeaderboardText(interaction.values[0]);
-        await interaction.editReply({ content: text, components: [] });
+        // clear the select menu on the first message, then page out the rest
+        const chunks = splitMessage(text);
+        if (chunks.length === 1) {
+          await interaction.editReply({ content: chunks[0], components: [] });
+        } else {
+          await interaction.editReply({ content: chunks[0] + `\n— Page 1/${chunks.length} —`, components: [] });
+          for (let i = 1; i < chunks.length; i++) {
+            await interaction.followUp({ content: chunks[i] + `\n— Page ${i + 1}/${chunks.length} —`, ephemeral: false });
+          }
+        }
       } catch (err) {
         console.error('leaderboard_campaign_select error:', err);
         await interaction.editReply({ content: '❌ Something went wrong.', components: [] });
