@@ -131,8 +131,8 @@ async function handleStart(interaction) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId('handle')
-          .setLabel('Your TikTok @handle or profile link')
-          .setPlaceholder('@yourhandle')
+          .setLabel('Link to your TikTok profile')
+          .setPlaceholder('https://www.tiktok.com/@yourhandle')
           .setStyle(TextInputStyle.Short)
           .setMaxLength(120)
           .setRequired(true)
@@ -165,55 +165,21 @@ async function handleTikTokModal(interaction) {
 
   await setState(interaction.user.id, { tiktokHandle: handle });
 
-  const genreRow = new ActionRowBuilder().addComponents(
-    new (require('discord.js').StringSelectMenuBuilder)()
-      .setCustomId('onboard:genres')
-      .setPlaceholder('Pick the genres you edit to (choose up to 3)')
-      .setMinValues(1).setMaxValues(3)
-      .addOptions(GENRES.map(g => ({ label: g, value: g })))
-  );
-
-  await interaction.reply({
-    content: `✅ Linked **@${handle}**\n\n**Step 2 of 3** — what genres do you edit to?`,
-    components: [genreRow],
-    flags: MessageFlags.Ephemeral,
-  });
-}
-
-async function handleGenres(interaction) {
-  await setState(interaction.user.id, { genres: interaction.values });
-
-  const styleRow = new ActionRowBuilder().addComponents(
-    new (require('discord.js').StringSelectMenuBuilder)()
-      .setCustomId('onboard:styles')
-      .setPlaceholder('Pick your edit styles (choose up to 3)')
-      .setMinValues(1).setMaxValues(3)
-      .addOptions(STYLES.map(s => ({ label: s, value: s })))
-  );
-
-  await interaction.update({
-    content: `✅ Genres saved\n\n**Step 2 of 3** — and what styles do you make?`,
-    components: [styleRow],
-  });
-}
-
-async function handleStyles(interaction) {
-  await setState(interaction.user.id, { styles: interaction.values });
-
   const payRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('onboard:pay:paypal')
       .setLabel('PayPal').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('onboard:pay:bank')
       .setLabel('Bank Transfer').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('onboard:pay:crypto')
-      .setLabel('Crypto (USDT/USDC)').setStyle(ButtonStyle.Secondary),
   );
 
-  await interaction.update({
-    content: '✅ Styles saved\n\n**Step 3 of 3** — how do you want to get paid?',
+  await interaction.reply({
+    content: `✅ Linked **@${handle}**\n\n**Step 2 of 2** — how do you want to get paid?`,
     components: [payRow],
+    flags: MessageFlags.Ephemeral,
   });
 }
+
+
 
 async function handlePaymentChoice(interaction, method) {
   if (method === 'paypal') {
@@ -315,8 +281,6 @@ async function complete(interaction) {
       .addFields(
         { name: 'TikTok', value: `[@${state.tiktokHandle}](https://www.tiktok.com/@${state.tiktokHandle})`, inline: true },
         { name: 'Payment', value: state.paymentMethod || 'Not set', inline: true },
-        { name: 'Genres', value: (state.genres || []).join(', ') || '—', inline: false },
-        { name: 'Styles', value: (state.styles || []).join(', ') || '—', inline: false },
       )
       .setThumbnail(interaction.user.displayAvatarURL())
       .setTimestamp();
@@ -328,16 +292,9 @@ async function complete(interaction) {
   // 4. Welcome.
   const payload = {
     content:
-      `🎉 **You're in — welcome to the Network.**\n\n` +
-      `Head to <#${config.CHANNELS.ACTIVE_CAMPAIGNS}> to see what's live right now.\n\n` +
-      `**Two things worth knowing:**\n` +
-      `• Submit edits with the panel in the campaign channel. Views update every 12 hours.\n` +
-      `• **Keep your DMs open.** Payment confirmations and campaign briefs go out by DM.\n\n` +
-      `⭐ Consistent performance on open campaigns is how you get invited to **Core**.`,
-    components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setLabel('View Active Campaigns').setStyle(ButtonStyle.Link)
-        .setURL(`https://discord.com/channels/${config.GUILD_ID}/${config.CHANNELS.ACTIVE_CAMPAIGNS}`)
-    )],
+      `✅ **You're all set! Welcome to Editable Group.**\n\n` +
+      `Have a look around the server, and say hello in <#1536395106024685651>.`,
+    components: [],
     flags: MessageFlags.Ephemeral,
   };
 
@@ -357,10 +314,7 @@ async function route(interaction) {
   try {
     if (id === 'onboard:start') await handleStart(interaction);
     else if (id === 'onboard:tiktok') await handleTikTokModal(interaction);
-    else if (id === 'onboard:genres') await handleGenres(interaction);
-    else if (id === 'onboard:styles') await handleStyles(interaction);
     else if (id === 'onboard:paypal') await handlePaymentModal(interaction, 'paypal');
-    else if (id === 'onboard:crypto') await handlePaymentModal(interaction, 'crypto');
     else if (id.startsWith('onboard:pay:')) await handlePaymentChoice(interaction, id.split(':')[2]);
     else return false;
   } catch (err) {
