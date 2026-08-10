@@ -82,7 +82,7 @@ module.exports = {
     // Reject a submission whose TikTok author handle doesn't match the handle
     // the editor registered at onboarding. This is the single highest-value
     // check once the server is public.
-    ENFORCE_HANDLE_MATCH: true,
+    ENFORCE_HANDLE_MATCH: false,
 
     // Videos posted before this many hours ago are rejected — stops people
     // submitting old viral posts that were never made for your campaign.
