@@ -74,33 +74,7 @@ async function clearState(userId) {
 // ── The static panel ────────────────────────────────────────────────────────
 
 function buildPanel() {
-  const embed = new EmbedBuilder()
-    .setColor(config.BRAND_COLOR)
-    .setTitle('Welcome to Editable Group')
-    .setDescription(
-      'We run paid TikTok edit campaigns for music labels and artists. ' +
-      'You make edits, they get views, you get paid per 1,000 views.\n\n' +
-      '**Tap the button below to get set up.** It takes about 30 seconds.\n\n' +
-      '__What happens next__\n' +
-      '➊ Link your TikTok\n' +
-      '➋ Pick your genres and styles\n' +
-      '➌ Choose how you want to be paid\n\n' +
-      'You\'ll get the **Network** role and immediate access to every open campaign.'
-    )
-    .addFields(
-      {
-        name: '🔓 Network',
-        value: 'Open to everyone. High-volume campaigns, big reach, paid per view.',
-        inline: true,
-      },
-      {
-        name: '⭐ Core',
-        value: 'Invite-only, earned through performance. Exclusive campaigns for '
-             + 'clients paying for quality control — and better rates.',
-        inline: true,
-      },
-    )
-    .setFooter({ text: 'Editable Group · The organic content network for music, film & culture' });
+const content = '👋 Welcome! Please complete the onboarding below to get access to the server.';
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -110,7 +84,7 @@ function buildPanel() {
       .setStyle(ButtonStyle.Primary)
   );
 
-  return { embeds: [embed], components: [row] };
+  return { content, embeds: [], components: [row] };
 }
 
 /**
