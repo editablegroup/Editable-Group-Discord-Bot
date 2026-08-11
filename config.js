@@ -188,8 +188,9 @@ module.exports = {
     + 'The only requirement is that it\'s a **high quality edit**. Show us what '
     + 'you can actually do.',
 
-    CAPTION: 'Get paid for your edits, join Editable: discord.gg/editable #editable1k',
+    CAPTION: 'Get paid for your edits, join Editable: discord.gg/editable @editable.group #editable1k',
     HASHTAG: '#editable1k',
+    MENTION: '@editable.group',
 
     DROPDOWN_LABEL: '💲1000 EDIT COMPETITION',
     MAX_ENTRIES: 0, // 0 = unlimited
