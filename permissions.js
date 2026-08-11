@@ -33,6 +33,9 @@ function getTier(member) {
   if (!member) return config.TIERS.NONE;
   if (isStaff(member.id)) return config.TIERS.STAFF;
   if (member.roles.cache.has(config.ROLES.CORE)) return config.TIERS.CORE;
+  // Your original hand-picked 100 — vetted before onboarding existed, so the
+  // legacy Editor role counts as full access. No re-onboarding.
+  if (member.roles.cache.has(config.ROLES.LEGACY_EDITOR)) return config.TIERS.CORE;
   if (member.roles.cache.has(config.ROLES.NETWORK)) return config.TIERS.NETWORK;
   return config.TIERS.NONE;
 }
