@@ -423,7 +423,8 @@ async function buildBoard(viewerId = null) {
     .setFooter({ text: 'Ranked by your best single entry. Final at the deadline.' })
     .setTimestamp();
 
-  const idx = rows.findIndex(r => r._id === viewerId);
+  if (viewerId) {
+    const idx = rows.findIndex(r => r._id === viewerId);
     embed.addFields({
       name: 'Your position',
       value: idx >= 0
