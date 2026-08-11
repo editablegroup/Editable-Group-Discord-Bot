@@ -176,7 +176,8 @@ module.exports = {
     BRIEF_PLAIN: 'Open brief, any style, any niche. High quality edits.',
 
     JUDGING: 'Highest view count',
-    JUDGING_DETAIL: 'Highest view count on a single entry. Most views wins.',
+    JUDGING_DETAIL: 'Highest view count on a single entry. Submit as many as you '
+                  + 'like — your best one counts.',
 
     PLATFORMS: ['TikTok', 'Instagram Reels', 'YouTube Shorts'],
 
