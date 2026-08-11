@@ -81,6 +81,10 @@ async function getCommittedSpend(campaignValue) {
 }
 
 async function budgetStatus(campaign) {
+  // Competitions have no RPM budget — prizes are fixed and paid manually.
+  if (campaign.type === 'competition' || campaign.hideBudget) {
+    return { spent: 0, remaining: Infinity, percentUsed: 0, exhausted: false };
+  }
   const spent = await getCommittedSpend(campaign.value);
   const remaining = Math.max(0, campaign.budget - spent);
   return {
@@ -134,12 +138,19 @@ function buildOfferEmbed(campaign, budget) {
       { name: '📊 Min views to earn', value: campaign.minViews.toLocaleString('en-US'), inline: true },
       { name: '⏳ Ends', value: `<t:${Math.floor(new Date(campaign.endDate).getTime() / 1000)}:R>`, inline: true },
       { name: '🎯 Access', value: isCore ? 'Core members only' : 'Open to all Network editors', inline: true },
-      { name: '💵 Budget', value: `${bar(budget.percentUsed)} ${Math.round(100 - budget.percentUsed)}% left`, inline: true },
     )
     .setFooter({ text: 'Editable Group' })
     .setTimestamp();
 
-  if (campaign.bonus1st) {
+  if (!campaign.hideBudget && budget) {
+    embed.addFields({
+      name: '💵 Budget',
+      value: `${bar(budget.percentUsed)} ${Math.round(100 - budget.percentUsed)}% left`,
+      inline: true,
+    });
+  }
+
+  if (campaign.bonus1st && !campaign.hidePlacements) {
     embed.addFields({
       name: '🥇 Bonuses',
       value: `1st place: **$${campaign.bonus1st}**` +
@@ -553,7 +564,9 @@ async function buildLeaderboardEmbed(campaignValue, viewerId = null) {
   if (!board) board = { rows: await rebuildLeaderboard(campaignValue), updatedAt: new Date() };
   const rows = board.rows || [];
 
-  const medal = i => ['🥇', '🥈', '🥉'][i] || `\`${String(i + 1).padStart(2, ' ')}\``;
+  const medal = campaign.hidePlacements
+    ? () => '•'
+    : i => ['🥇', '🥈', '🥉'][i] || `\`${String(i + 1).padStart(2, ' ')}\``;
   const top = rows.slice(0, 15).map((r, i) =>
     `${medal(i)} **${r.username}** — ${r.views.toLocaleString('en-US')} views · ${r.posts} post${r.posts === 1 ? '' : 's'}`
   ).join('\n') || '_No approved submissions yet._';
@@ -570,8 +583,10 @@ async function buildLeaderboardEmbed(campaignValue, viewerId = null) {
     if (idx >= 0) {
       embed.addFields({
         name: 'Your position',
-        value: `**#${idx + 1}** — ${rows[idx].views.toLocaleString('en-US')} views · `
-             + `$${rows[idx].earnings.toFixed(2)} earned`,
+        value: campaign.hidePlacements
+          ? `${rows[idx].posts} entries · ${rows[idx].views.toLocaleString('en-US')} views`
+          : `**#${idx + 1}** — ${rows[idx].views.toLocaleString('en-US')} views · `
+            + `$${rows[idx].earnings.toFixed(2)} earned`,
       });
     } else {
       embed.addFields({ name: 'Your position', value: 'Not ranked yet — get an edit approved.' });
