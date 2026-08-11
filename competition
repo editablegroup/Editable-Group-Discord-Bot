@@ -34,21 +34,15 @@ const COMP = config.COMPETITION;
 
 /** Public announcement — the one with Join / Leave. Goes in the public channel. */
 function buildPublicPanel() {
-  const embed = new EmbedBuilder()
-    .setColor(0xf5b800)
-    .setTitle(`🏆 ${COMP.TITLE}`)
-    .setDescription(
-      'Make an edit. Best ones take the prizes.\n\n' +
-      'Open to every member — no minimum following, no previous campaigns needed.'
-    )
-    .addFields(
-      { name: '💰 Prize Pool', value: COMP.PRIZE_SUMMARY, inline: false },
-      { name: '⚖️ Judged on', value: COMP.JUDGING, inline: true },
-      { name: '📱 Platforms', value: COMP.PLATFORMS.join(' · '), inline: true },
-      { name: '📅 Deadline', value: `<t:${COMP.DEADLINE_UNIX}:F>\n<t:${COMP.DEADLINE_UNIX}:R>`, inline: false },
-      { name: '📋 Brief', value: COMP.BRIEF_SHORT, inline: false },
-    )
-    .setFooter({ text: 'Editable Group' });
+  const d = COMP.DEADLINE_UNIX;
+  const content =
+    `🏆 **${COMP.TITLE}**\n\n` +
+    `🥇 **Prizes:** ${COMP.PRIZE_SUMMARY_PLAIN}\n` +
+    `\u2696\ufe0f **Judged on:** ${COMP.JUDGING}\n` +
+    `📅 **Deadline:** <t:${d}:F> (<t:${d}:R>)\n` +
+    `📱 **Platforms:** ${COMP.PLATFORMS.join(', ')}\n\n` +
+    `**Brief:** ${COMP.BRIEF_SHORT}\n\n` +
+    `👇 **JOIN BELOW TO ENTER**`;
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('comp:join')
@@ -57,25 +51,22 @@ function buildPublicPanel() {
       .setLabel('Leave').setStyle(ButtonStyle.Danger),
   );
 
-  return { embeds: [embed], components: [row] };
+  return { content, components: [row] };
 }
 
-/** Announcement inside the private competition category. */
+/** Announcement inside the private competition category. Plain text. */
 function buildAnnouncementPanel() {
-  const embed = new EmbedBuilder()
-    .setColor(0xf5b800)
-    .setTitle(`🏆 ${COMP.TITLE}`)
-    .setDescription("You're in. Here's everything you need.")
-    .addFields(
-      { name: '🥇 Prizes', value: COMP.PRIZES_DETAIL, inline: false },
-      { name: '⚖️ Judged on', value: COMP.JUDGING_DETAIL, inline: false },
-      { name: '📅 Deadline', value: `<t:${COMP.DEADLINE_UNIX}:F> — <t:${COMP.DEADLINE_UNIX}:R>`, inline: false },
-      { name: '📱 Platforms', value: COMP.PLATFORMS.join(' · '), inline: true },
-      { name: '📋 Brief', value: COMP.BRIEF_FULL, inline: false },
-    )
-    .setFooter({ text: 'Read the rules channel before you post. Winners announced after the deadline.' });
+  const d = COMP.DEADLINE_UNIX;
+  const content =
+    `🏆 **${COMP.TITLE}**\n\n` +
+    `${COMP.PRIZES_DETAIL}\n\n` +
+    `\u2696\ufe0f **Judged on:** ${COMP.JUDGING_PLAIN}\n` +
+    `📅 **Deadline:** <t:${d}:F> (<t:${d}:R>)\n` +
+    `📱 **Platforms:** ${COMP.PLATFORMS.join(', ')}\n\n` +
+    `**Brief:** ${COMP.BRIEF_PLAIN}\n\n` +
+    `Read the rules before you post \u2014 the caption is required.`;
 
-  return { embeds: [embed] };
+  return { content };
 }
 
 /** Rules panel — includes the mandatory caption. */
@@ -84,30 +75,23 @@ function buildRulesPanel() {
     .setColor(config.BRAND_COLOR)
     .setTitle('📋 Rules')
     .setDescription(
-      '**1. Use this caption on your post**\n' +
-      'Copy and paste it exactly. You can add your own text after it.\n\n' +
+      '**1. Use this caption**\n' +
+      'Copy it exactly. You can add your own text after it.\n\n' +
       `> ${COMP.CAPTION}\n\n` +
       '**2. Include the hashtag**\n' +
-      `Your post must include ${COMP.HASHTAG} — it\'s how we find and verify entries. ` +
-      'No hashtag, no entry.\n\n' +
-      '**3. The brief**\n' +
-      `${COMP.BRIEF_FULL}\n\n` +
-      '**3. Quality counts**\n' +
-      'This is not judged on views alone. Low-effort edits will not place, ' +
-      'no matter how well they perform. Put your best work in.\n\n' +
-      '**4. Your own work only**\n' +
-      'The edit must be made by you and posted from your own account. ' +
-      'Reposts, stolen edits and re-uploads are disqualified.\n\n' +
-      '**5. Posted during the competition**\n' +
-      'Edits must be posted after the competition opens. Old uploads do not count.\n\n' +
-      '**6. No view botting**\n' +
-      'Any artificial engagement disqualifies every entry from that account.\n\n' +
-      '**7. Keep the post up**\n' +
+      `${COMP.HASHTAG} must be on your post \u2014 it's how we find entries.\n\n` +
+      '**3. Brief**\n' +
+      `${COMP.BRIEF_PLAIN}\n\n` +
+      '**4. Quality counts**\n' +
+      'Not judged on views alone. Low-effort edits won\'t place.\n\n' +
+      '**5. Your own work**\n' +
+      'Made by you, posted from your account. Reposts are disqualified.\n\n' +
+      '**6. Posted during the competition**\n' +
+      'Old uploads don\'t count.\n\n' +
+      '**7. No view botting**\n' +
+      'Artificial engagement disqualifies every entry from that account.\n\n' +
+      '**8. Keep the post up**\n' +
       'Entries deleted before judging are void.'
-    )
-    .addFields(
-      { name: '📱 Platforms', value: COMP.PLATFORMS.join(' · '), inline: true },
-      { name: '📅 Deadline', value: `<t:${COMP.DEADLINE_UNIX}:R>`, inline: true },
     );
 
   return { embeds: [embed] };
@@ -119,13 +103,10 @@ function buildSubmitInfoPanel() {
     .setColor(config.BRAND_COLOR)
     .setTitle('📩 How to submit')
     .setDescription(
-      `Post your edit, then head to <#${config.CHANNELS.SUBMIT}> and pick ` +
-      `**${COMP.DROPDOWN_LABEL}** from the dropdown.\n\n` +
-      'Paste your link in the box that opens. That\'s it.\n\n' +
-      `You can submit up to **${COMP.MAX_ENTRIES}** entries. ` +
-      'Track them any time with `/submissions`.'
-    )
-    .setFooter({ text: 'Submissions close at the deadline — no late entries.' });
+      `Post your edit, go to <#${config.CHANNELS.SUBMIT}>, hit **Submit Edit** and ` +
+      `pick **${COMP.DROPDOWN_LABEL}** from the dropdown.\n\n` +
+      `Up to **${COMP.MAX_ENTRIES}** entries. Track them with \`/submissions\`.`
+    );
 
   return { embeds: [embed] };
 }
@@ -467,10 +448,10 @@ async function command(interaction) {
     const which = interaction.options.getString('panel');
     const target = TARGETS[which];
     const payload = target.build();
+    const header = `─── **PREVIEW: \`${which}\`** → <#${target.channel()}> ───\n\n`;
     return interaction.editReply({
-      content: `**Preview — \`${which}\`** → would post in <#${target.channel()}>\n` +
-               '_Nobody else can see this. Nothing has been posted._',
-      embeds: payload.embeds,
+      content: header + (payload.content || '_(embed only — see below)_'),
+      embeds: payload.embeds || [],
       components: payload.components || [],
     });
   }
@@ -512,13 +493,12 @@ async function command(interaction) {
     if (!channel) return interaction.editReply(`❌ Can't reach <#${channelId}>.`);
 
     const payload = target.build();
+    const base = payload.content || '';
     const body = {
-      embeds: payload.embeds,
+      content: ping ? (base ? `@everyone\n\n${base}` : '@everyone') : base,
+      embeds: payload.embeds || [],
       components: payload.components || [],
-      ...(ping ? {
-        content: '@everyone',
-        allowedMentions: { parse: ['everyone'] },
-      } : { allowedMentions: { parse: [] } }),
+      allowedMentions: ping ? { parse: ['everyone'] } : { parse: [] },
     };
 
     const saved = await getMeta(target.key);
