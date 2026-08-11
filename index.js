@@ -170,6 +170,10 @@ const commands = [
     .setDescription('Re-post the onboarding and support panels')),
 
   adminCmd(new SlashCommandBuilder()
+    .setName('submitpanel')
+    .setDescription('Post the submissions panel in this channel')),
+
+  adminCmd(new SlashCommandBuilder()
     .setName('comp')
     .setDescription('Manage the edit competition')
     .addSubcommand(s => s.setName('setup')
@@ -254,6 +258,7 @@ client.on(Events.InteractionCreate, async interaction => {
       case 'lockdown':     return admin.lockdown(interaction);
       case 'campaign':     return admin.campaignCommand(interaction);
       case 'comp':         return competition.command(interaction);
+      case 'submitpanel':  return panel.command(interaction);
 
       case 'updatestats': {
         if (!await perms.requireStaff(interaction)) return;
