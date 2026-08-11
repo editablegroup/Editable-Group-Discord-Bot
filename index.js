@@ -12,6 +12,7 @@ const perms = require('./permissions');
 const onboarding = require('./onboarding');
 const campaigns = require('./campaigns');
 const admin = require('./admin');
+const competition = require('./competition');
 
 /**
  * ============================================================================
@@ -168,6 +169,36 @@ const commands = [
     .setDescription('Re-post the onboarding and support panels')),
 
   adminCmd(new SlashCommandBuilder()
+    .setName('comp')
+    .setDescription('Manage the edit competition')
+    .addSubcommand(s => s.setName('setup')
+      .setDescription('Create the competition and enable the submit dropdown'))
+    .addSubcommand(s => s.setName('preview')
+      .setDescription('See a panel privately before posting it')
+      .addStringOption(o => o.setName('panel').setDescription('Which panel').setRequired(true)
+        .addChoices(
+          { name: 'Public announcement (Join/Leave)', value: 'public' },
+          { name: 'Announcement (private category)', value: 'announcement' },
+          { name: 'Rules', value: 'rules' },
+          { name: 'Submit info', value: 'submitinfo' },
+        )))
+    .addSubcommand(s => s.setName('post')
+      .setDescription('Publish a panel to its channel')
+      .addStringOption(o => o.setName('panel').setDescription('Which panel').setRequired(true)
+        .addChoices(
+          { name: 'Public announcement (Join/Leave)', value: 'public' },
+          { name: 'Announcement (private category)', value: 'announcement' },
+          { name: 'Rules', value: 'rules' },
+          { name: 'Submit info', value: 'submitinfo' },
+        ))
+      .addBooleanOption(o => o.setName('ping')
+        .setDescription('Ping @everyone? Defaults to NO').setRequired(false)))
+    .addSubcommand(s => s.setName('board')
+      .setDescription('Competition entries and views'))
+    .addSubcommand(s => s.setName('close')
+      .setDescription('Close the competition'))),
+
+  adminCmd(new SlashCommandBuilder()
     .setName('campaign')
     .setDescription('Manage campaigns')
     .addSubcommand(s => s.setName('create').setDescription('Create a new campaign'))
@@ -196,6 +227,7 @@ client.on(Events.InteractionCreate, async interaction => {
     // falling through every branch like the old single-handler design did.
     if (interaction.isButton() || interaction.isModalSubmit() || interaction.isStringSelectMenu()) {
       if (await onboarding.route(interaction)) return;
+      if (await competition.route(interaction)) return;
       if (await campaigns.route(interaction)) return;
       if (await admin.route(interaction)) return;
       return;
@@ -219,6 +251,7 @@ client.on(Events.InteractionCreate, async interaction => {
       case 'migratecore':  return admin.migrateCore(interaction);
       case 'lockdown':     return admin.lockdown(interaction);
       case 'campaign':     return admin.campaignCommand(interaction);
+      case 'comp':         return competition.command(interaction);
 
       case 'updatestats': {
         if (!await perms.requireStaff(interaction)) return;
@@ -233,6 +266,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (!await perms.requireStaff(interaction)) return;
         await perms.safeDefer(interaction, true);
         await onboarding.ensurePanel(client);
+  await competition.ensureSubmitPanel(client);
         await postSupportPanel(client);
         return interaction.editReply('✅ Panels refreshed.');
       }
@@ -422,6 +456,7 @@ client.once(Events.ClientReady, async () => {
   }
 
   await onboarding.ensurePanel(client);
+  await competition.ensureSubmitPanel(client);
 
   // Stats: first run after 30s, then every 12h.
   setTimeout(() => campaigns.updateAllStats(client).catch(console.error), 30_000);
