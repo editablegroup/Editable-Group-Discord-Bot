@@ -105,7 +105,7 @@ function buildSubmitInfoPanel() {
     .setDescription(
       `Post your edit, go to <#${config.CHANNELS.SUBMIT}>, hit **Submit Edit** and ` +
       `pick **${COMP.DROPDOWN_LABEL}** from the dropdown.\n\n` +
-      `Up to **${COMP.MAX_ENTRIES}** entries. Track them with \`/submissions\`.`
+      'Submit as many entries as you like. Track them with `/submissions`.'
     );
 
   return { embeds: [embed] };
@@ -311,7 +311,7 @@ async function handleEntryModal(interaction) {
   const count = await getDb().collection('submissions').countDocuments({
     userId: interaction.user.id, campaignValue: COMP.VALUE, status: { $ne: 'rejected' },
   });
-  if (count >= COMP.MAX_ENTRIES) {
+  if (COMP.MAX_ENTRIES > 0 && count >= COMP.MAX_ENTRIES) {
     return perms.safeReply(interaction,
       `❌ You've submitted the maximum of ${COMP.MAX_ENTRIES} entries.`);
   }
@@ -360,7 +360,7 @@ async function handleEntryModal(interaction) {
       { name: 'Editor', value: `<@${interaction.user.id}>`, inline: true },
       { name: 'Platform', value: platform, inline: true },
       { name: 'Views', value: platform === 'TikTok' ? views.toLocaleString('en-US') : 'Manual', inline: true },
-      { name: 'Entry #', value: `${count + 1} of ${COMP.MAX_ENTRIES}`, inline: true },
+      { name: 'Entry #', value: String(count + 1), inline: true },
     )
     .setTimestamp();
   if (thumb) embed.setThumbnail(thumb);
@@ -376,7 +376,7 @@ async function handleEntryModal(interaction) {
 
   return perms.safeReply(interaction,
     `✅ **Entry submitted** — [${clipName}](${rawLink})\n` +
-    `Platform: **${platform}** · Entry ${count + 1} of ${COMP.MAX_ENTRIES}\n\n` +
+    `Platform: **${platform}** · Entry #${count + 1}\n\n` +
     (platform === 'TikTok'
       ? 'Views update every 12 hours.'
       : 'Instagram and YouTube views are counted manually before judging.'));
