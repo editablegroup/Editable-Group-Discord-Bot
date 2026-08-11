@@ -196,7 +196,7 @@ module.exports = {
     HASHTAG: '#editable1k',
 
     DROPDOWN_LABEL: '💲1000 EDIT COMPETITION',
-    MAX_ENTRIES: 5,
+    MAX_ENTRIES: 0, // 0 = unlimited
   },
 
   /**
