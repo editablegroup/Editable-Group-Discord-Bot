@@ -211,4 +211,43 @@ async function route(interaction) {
   return true;
 }
 
-module.exports = { route, buildPicker };
+// ── /submitpanel — re-post the panel ────────────────────────────────────────
+
+function buildPanelMessage() {
+  const embed = new EmbedBuilder()
+    .setColor(0x2b2d31)
+    .setTitle('🎬 Manage Your Submissions')
+    .setDescription('Use the buttons below to manage your edits.\n\u200b')
+    .addFields(
+      { name: '📤 Submit Edit', value: 'Submit a TikTok edit to a campaign.', inline: true },
+      { name: '📊 My Submissions', value: 'View your edits, views and earnings.', inline: true },
+      { name: '\u200b', value: '\u200b', inline: true },
+      { name: '🏆 Leaderboard', value: 'See who has the most views per campaign.', inline: true },
+      { name: '📈 Campaign Status', value: 'View active campaigns, budgets and deadlines.', inline: true },
+      { name: '\u200b', value: '\u200b', inline: true },
+    );
+
+  const { ButtonBuilder, ButtonStyle } = require('discord.js');
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('submit_clip').setLabel('📤 Submit Edit').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('view_submissions').setLabel('📊 My Submissions').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('leaderboard_button').setLabel('🏆 Leaderboard').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('campaign_status').setLabel('📈 Campaign Status').setStyle(ButtonStyle.Secondary),
+  );
+
+  return { embeds: [embed], components: [row] };
+}
+
+async function command(interaction) {
+  if (!await perms.requireStaff(interaction)) return;
+  await perms.safeDefer(interaction, true);
+  try {
+    await interaction.channel.send(buildPanelMessage());
+    return interaction.editReply('✅ Panel sent.');
+  } catch (err) {
+    console.error('[Panel] send:', err.message);
+    return interaction.editReply('❌ Couldn\'t send it — check the bot can post here.');
+  }
+}
+
+module.exports = { route, buildPicker, command, buildPanelMessage };
