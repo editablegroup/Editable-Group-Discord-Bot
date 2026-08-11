@@ -41,6 +41,9 @@ module.exports = {
     // Your existing "Editor" role — the 100 hand-picked people.
     // Used once by /migratecore to bulk-grant Core, then it can be retired.
     LEGACY_EDITOR: '1437195425819131915',
+
+    // Granted by the Join button — unlocks the private competition category
+    COMPETITION: '1536767907948798113',
   },
 
   // ── Channels ──────────────────────────────────────────────────────────────
@@ -50,6 +53,15 @@ module.exports = {
     SUBMISSIONS: '1498679979666444378',
     ACTIVE_CAMPAIGNS: '1506778321969746092',
     DEMOGRAPHICS: '1519022400828739604',
+
+    // Where editors submit (the dropdown panel lives here)
+    SUBMIT: '1498679508247511230',
+
+    // Competition
+    COMP_ANNOUNCE_PUBLIC: '1536461950710448168', // public, has Join/Leave
+    COMP_ANNOUNCEMENT:    '1536768296316182689', // private category
+    COMP_RULES:           '1536768345800577165',
+    COMP_SUBMIT_INFO:     '1536768512817893466',
 
     // NEW — create these. Core campaigns must not be visible to Network.
     CORE_CAMPAIGNS: 'SET_ME_CORE_CAMPAIGNS_CHANNEL_ID',
@@ -138,6 +150,48 @@ module.exports = {
   },
 
   BRAND_COLOR: 0x1e4fd8,
+
+  // ── Edit competition ────────────────────────────────────────────
+  // Everything the competition says lives here. Change the copy in this block,
+  // run /comp preview, and you'll see it before anything is posted.
+  COMPETITION: {
+    VALUE: 'edit_comp_1000',
+    TITLE: '$1,000 Edit Competition',
+
+    // Deadline: 24 August 2026, 23:59 BST (= 22:59 UTC).
+    // Discord renders this in each member's own timezone automatically.
+    DEADLINE_UNIX: 1787612340,
+
+    // ⚠️ SET YOUR PRIZE SPLIT. These are placeholders — change them.
+    PRIZE_SUMMARY: '**$1,000** total — 1st $500 · 2nd $250 · 3rd $150 · 4th $100',
+    PRIZES_DETAIL:
+      '🥇 **1st — $500**\n' +
+      '🥈 **2nd — $250**\n' +
+      '🥉 **3rd — $150**\n' +
+      '🏅 **4th — $100**',
+
+    JUDGING: 'Quality **and** performance',
+    JUDGING_DETAIL:
+      'Judged by the Editable team on **edit quality, creativity and execution**, '
+    + 'alongside how the post performed.\n\n'
+    + '**This is not a view count competition.** A well-made edit with modest '
+    + 'numbers can beat a lazy one that got lucky.',
+
+    PLATFORMS: ['TikTok', 'Instagram Reels', 'YouTube Shorts'],
+
+    BRIEF_SHORT: 'Open brief — any style, any niche. High quality edits.',
+    BRIEF_FULL:
+      '**Open brief.** Any style, any niche — anime, film, TV, sports, '
+    + 'celeb, fancam, gaming, music, whatever you\'re best at.\n\n'
+    + 'The only requirement is that it\'s a **high quality edit**. Show us what '
+    + 'you can actually do.',
+
+    CAPTION: 'Get paid for your edits, join Editable: discord.gg/editable #editable1k',
+    HASHTAG: '#editable1k',
+
+    DROPDOWN_LABEL: '💲1000 EDIT COMPETITION',
+    MAX_ENTRIES: 5,
+  },
 
   /**
    * Legacy campaigns — seeded into MongoDB on first boot ONLY if the
