@@ -82,8 +82,8 @@ function buildRulesPanel() {
       `${COMP.HASHTAG} must be on your post \u2014 it's how we find entries.\n\n` +
       '**3. Brief**\n' +
       `${COMP.BRIEF_PLAIN}\n\n` +
-      '**4. Quality counts**\n' +
-      'Not judged on views alone. Low-effort edits won\'t place.\n\n' +
+      '**4. Judged on views**\n' +
+      'Highest view count wins. Views are counted at the deadline.\n\n' +
       '**5. Your own work**\n' +
       'Made by you, posted from your account. Reposts are disqualified.\n\n' +
       '**6. Posted during the competition**\n' +
@@ -414,7 +414,7 @@ async function buildBoard(viewerId = null) {
       { name: 'Editors', value: String(totals?.editors?.length || 0), inline: true },
       { name: 'Total views', value: (totals?.views || 0).toLocaleString('en-US'), inline: true },
     )
-    .setFooter({ text: 'Winners are chosen on quality and performance after the deadline.' })
+    .setFooter({ text: 'Ranked by views. Counted at the deadline.' })
     .setTimestamp();
 
   if (viewerId) {
