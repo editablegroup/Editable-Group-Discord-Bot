@@ -78,8 +78,9 @@ function buildRulesPanel() {
       '**1. Use this caption**\n' +
       'Copy it exactly. You can add your own text after it.\n\n' +
       `> ${COMP.CAPTION}\n\n` +
-      '**2. Include the hashtag**\n' +
-      `${COMP.HASHTAG} must be on your post \u2014 it's how we find entries.\n\n` +
+     '**2. Tag us**\n' +
+      `Your post must include ${COMP.HASHTAG} and tag **${COMP.MENTION}** — ` +
+      'that\'s how we find entries. Missing either one and it won\'t count.\n\n' +
       '**3. Brief**\n' +
       `${COMP.BRIEF_PLAIN}\n\n` +
       '**4. Judged on views**\n' +
