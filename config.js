@@ -172,16 +172,11 @@ module.exports = {
 
     // Plain-text variants (used by the non-embed announcement panels)
     PRIZE_SUMMARY_PLAIN: '1st $500 · 2nd $250 · 3rd $150 · 4th $100',
-    JUDGING_PLAIN: 'Edit quality, creativity and execution, alongside performance. '
-                 + 'Not views alone.',
+    JUDGING_PLAIN: 'Highest view count. Most views wins.',
     BRIEF_PLAIN: 'Open brief, any style, any niche. High quality edits.',
 
-    JUDGING: 'Quality and performance',
-    JUDGING_DETAIL:
-      'Judged by the Editable team on **edit quality, creativity and execution**, '
-    + 'alongside how the post performed.\n\n'
-    + '**This is not a view count competition.** A well-made edit with modest '
-    + 'numbers can beat a lazy one that got lucky.',
+    JUDGING: 'Highest view count',
+    JUDGING_DETAIL: 'Highest view count on a single entry. Most views wins.',
 
     PLATFORMS: ['TikTok', 'Instagram Reels', 'YouTube Shorts'],
 
