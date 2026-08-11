@@ -13,6 +13,7 @@ const onboarding = require('./onboarding');
 const campaigns = require('./campaigns');
 const admin = require('./admin');
 const competition = require('./competition');
+const panel = require('./panel');
 
 /**
  * ============================================================================
@@ -228,6 +229,7 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isButton() || interaction.isModalSubmit() || interaction.isStringSelectMenu()) {
       if (await onboarding.route(interaction)) return;
       if (await competition.route(interaction)) return;
+      if (await panel.route(interaction)) return;
       if (await campaigns.route(interaction)) return;
       if (await admin.route(interaction)) return;
       return;
@@ -266,7 +268,6 @@ client.on(Events.InteractionCreate, async interaction => {
         if (!await perms.requireStaff(interaction)) return;
         await perms.safeDefer(interaction, true);
         await onboarding.ensurePanel(client);
-  await competition.ensureSubmitPanel(client);
         await postSupportPanel(client);
         return interaction.editReply('✅ Panels refreshed.');
       }
@@ -456,7 +457,6 @@ client.once(Events.ClientReady, async () => {
   }
 
   await onboarding.ensurePanel(client);
-  await competition.ensureSubmitPanel(client);
 
   // Stats: first run after 30s, then every 12h.
   setTimeout(() => campaigns.updateAllStats(client).catch(console.error), 30_000);
