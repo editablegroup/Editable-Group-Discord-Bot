@@ -170,7 +170,13 @@ module.exports = {
       '🥉 **3rd — $150**\n' +
       '🏅 **4th — $100**',
 
-    JUDGING: 'Quality **and** performance',
+    // Plain-text variants (used by the non-embed announcement panels)
+    PRIZE_SUMMARY_PLAIN: '1st $500 · 2nd $250 · 3rd $150 · 4th $100',
+    JUDGING_PLAIN: 'Edit quality, creativity and execution, alongside performance. '
+                 + 'Not views alone.',
+    BRIEF_PLAIN: 'Open brief, any style, any niche. High quality edits.',
+
+    JUDGING: 'Quality and performance',
     JUDGING_DETAIL:
       'Judged by the Editable team on **edit quality, creativity and execution**, '
     + 'alongside how the post performed.\n\n'
