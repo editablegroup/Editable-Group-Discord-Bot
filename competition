@@ -1,0 +1,576 @@
+'use strict';
+
+const {
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder,
+  StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
+  MessageFlags,
+} = require('discord.js');
+
+const config = require('./config');
+const { getDb, getMeta, setMeta } = require('./db');
+const tiktok = require('./tiktok');
+const perms = require('./permissions');
+const campaigns = require('./campaigns');
+
+/**
+ * ============================================================================
+ *  EDIT COMPETITION
+ * ============================================================================
+ *  Deliberately NOT a normal campaign:
+ *    • no budget bar, no RPM, no committed-spend tracking
+ *    • no 1st/2nd placement bonuses — winners are chosen by you, later
+ *    • leaderboard shows posts and views only, no ranking medals
+ *    • accepts TikTok, Instagram Reels and YouTube Shorts
+ *
+ *  Nothing here posts to a channel on its own. Everything goes through
+ *  /comp preview first, and the @everyone ping is an explicit opt-in flag on
+ *  /comp post. You will never accidentally ping the server from this file.
+ * ============================================================================
+ */
+
+const COMP = config.COMPETITION;
+
+// ── Panels ──────────────────────────────────────────────────────────────────
+
+/** Public announcement — the one with Join / Leave. Goes in the public channel. */
+function buildPublicPanel() {
+  const embed = new EmbedBuilder()
+    .setColor(0xf5b800)
+    .setTitle(`🏆 ${COMP.TITLE}`)
+    .setDescription(
+      'Make an edit. Best ones take the prizes.\n\n' +
+      'Open to every member — no minimum following, no previous campaigns needed.'
+    )
+    .addFields(
+      { name: '💰 Prize Pool', value: COMP.PRIZE_SUMMARY, inline: false },
+      { name: '⚖️ Judged on', value: COMP.JUDGING, inline: true },
+      { name: '📱 Platforms', value: COMP.PLATFORMS.join(' · '), inline: true },
+      { name: '📅 Deadline', value: `<t:${COMP.DEADLINE_UNIX}:F>\n<t:${COMP.DEADLINE_UNIX}:R>`, inline: false },
+      { name: '📋 Brief', value: COMP.BRIEF_SHORT, inline: false },
+    )
+    .setFooter({ text: 'Editable Group' });
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('comp:join')
+      .setLabel('Join').setEmoji('🚀').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('comp:leave')
+      .setLabel('Leave').setStyle(ButtonStyle.Danger),
+  );
+
+  return { embeds: [embed], components: [row] };
+}
+
+/** Announcement inside the private competition category. */
+function buildAnnouncementPanel() {
+  const embed = new EmbedBuilder()
+    .setColor(0xf5b800)
+    .setTitle(`🏆 ${COMP.TITLE}`)
+    .setDescription("You're in. Here's everything you need.")
+    .addFields(
+      { name: '🥇 Prizes', value: COMP.PRIZES_DETAIL, inline: false },
+      { name: '⚖️ Judged on', value: COMP.JUDGING_DETAIL, inline: false },
+      { name: '📅 Deadline', value: `<t:${COMP.DEADLINE_UNIX}:F> — <t:${COMP.DEADLINE_UNIX}:R>`, inline: false },
+      { name: '📱 Platforms', value: COMP.PLATFORMS.join(' · '), inline: true },
+      { name: '📋 Brief', value: COMP.BRIEF_FULL, inline: false },
+    )
+    .setFooter({ text: 'Read the rules channel before you post. Winners announced after the deadline.' });
+
+  return { embeds: [embed] };
+}
+
+/** Rules panel — includes the mandatory caption. */
+function buildRulesPanel() {
+  const embed = new EmbedBuilder()
+    .setColor(config.BRAND_COLOR)
+    .setTitle('📋 Rules')
+    .setDescription(
+      '**1. Use this caption on your post**\n' +
+      'Copy and paste it exactly. You can add your own text after it.\n\n' +
+      `> ${COMP.CAPTION}\n\n` +
+      '**2. Include the hashtag**\n' +
+      `Your post must include ${COMP.HASHTAG} — it\'s how we find and verify entries. ` +
+      'No hashtag, no entry.\n\n' +
+      '**3. The brief**\n' +
+      `${COMP.BRIEF_FULL}\n\n` +
+      '**3. Quality counts**\n' +
+      'This is not judged on views alone. Low-effort edits will not place, ' +
+      'no matter how well they perform. Put your best work in.\n\n' +
+      '**4. Your own work only**\n' +
+      'The edit must be made by you and posted from your own account. ' +
+      'Reposts, stolen edits and re-uploads are disqualified.\n\n' +
+      '**5. Posted during the competition**\n' +
+      'Edits must be posted after the competition opens. Old uploads do not count.\n\n' +
+      '**6. No view botting**\n' +
+      'Any artificial engagement disqualifies every entry from that account.\n\n' +
+      '**7. Keep the post up**\n' +
+      'Entries deleted before judging are void.'
+    )
+    .addFields(
+      { name: '📱 Platforms', value: COMP.PLATFORMS.join(' · '), inline: true },
+      { name: '📅 Deadline', value: `<t:${COMP.DEADLINE_UNIX}:R>`, inline: true },
+    );
+
+  return { embeds: [embed] };
+}
+
+/** Submit info panel — points at the real submit channel. */
+function buildSubmitInfoPanel() {
+  const embed = new EmbedBuilder()
+    .setColor(config.BRAND_COLOR)
+    .setTitle('📩 How to submit')
+    .setDescription(
+      `Post your edit, then head to <#${config.CHANNELS.SUBMIT}> and pick ` +
+      `**${COMP.DROPDOWN_LABEL}** from the dropdown.\n\n` +
+      'Paste your link in the box that opens. That\'s it.\n\n' +
+      `You can submit up to **${COMP.MAX_ENTRIES}** entries. ` +
+      'Track them any time with `/submissions`.'
+    )
+    .setFooter({ text: 'Submissions close at the deadline — no late entries.' });
+
+  return { embeds: [embed] };
+}
+
+// ── Submit dropdown (lives in the submit channel) ────────────────────────────
+
+/**
+ * One persistent dropdown listing everything the member can submit to.
+ * Replaces per-campaign buttons scattered across channels.
+ */
+async function buildSubmitDropdown(member) {
+  const list = await campaigns.listCampaigns({ status: 'active' });
+  const options = [];
+
+  for (const c of list) {
+    if (c.type === 'competition') {
+      if (!member || !member.roles.cache.has(config.ROLES.COMPETITION)) continue;
+      options.push({
+        label: COMP.DROPDOWN_LABEL.slice(0, 100),
+        description: 'Submit your competition entry',
+        value: c.value,
+      });
+    } else {
+      if (member && !perms.canAccessCampaign(member, c)) continue;
+      options.push({
+        label: c.label.slice(0, 100),
+        description: `$${c.rpm.toFixed(2)} per 1K views`,
+        value: c.value,
+      });
+    }
+  }
+
+  if (!options.length) {
+    options.push({ label: 'No campaigns open right now', value: 'none' });
+  }
+
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('comp:pick')
+      .setPlaceholder('Choose what to submit to…')
+      .addOptions(options.slice(0, 25))
+  );
+}
+
+function buildSubmitChannelPanel() {
+  return new EmbedBuilder()
+    .setColor(config.BRAND_COLOR)
+    .setTitle('📩 Submit your edit')
+    .setDescription(
+      'Pick what you\'re submitting to from the dropdown below, then paste your link.\n\n' +
+      'Use `/submissions` any time to see your entries and views.'
+    );
+}
+
+/** Refresh the persistent submit panel. Safe to call repeatedly. */
+async function ensureSubmitPanel(client) {
+  try {
+    const channel = await client.channels.fetch(config.CHANNELS.SUBMIT);
+    const row = await buildSubmitDropdown(null);
+    const payload = { embeds: [buildSubmitChannelPanel()], components: [row] };
+
+    const saved = await getMeta('submitPanelMessageId');
+    if (saved) {
+      const msg = await channel.messages.fetch(saved).catch(() => null);
+      if (msg) { await msg.edit(payload); return; }
+    }
+    const msg = await channel.send(payload);
+    await msg.pin().catch(() => {});
+    await setMeta('submitPanelMessageId', msg.id);
+    console.log('[Comp] Submit panel ready');
+  } catch (err) {
+    console.error('[Comp] ensureSubmitPanel:', err.message);
+  }
+}
+
+// ── Join / Leave ────────────────────────────────────────────────────────────
+
+async function handleJoin(interaction) {
+  if (!await perms.enforceCooldown(interaction, 'compjoin', 3000)) return;
+  if (!await perms.requireOnboarded(interaction)) return;
+
+  if (interaction.member.roles.cache.has(config.ROLES.COMPETITION)) {
+    return perms.safeReply(interaction, '✅ You\'re already entered.');
+  }
+
+  const comp = await campaigns.getCampaign(COMP.VALUE);
+  if (!comp || comp.status !== 'active') {
+    return perms.safeReply(interaction, '⌛ The competition isn\'t open.');
+  }
+  if (Date.now() > COMP.DEADLINE_UNIX * 1000) {
+    return perms.safeReply(interaction, '⌛ The deadline has passed — entries are closed.');
+  }
+
+  try {
+    await interaction.member.roles.add(config.ROLES.COMPETITION, 'Joined competition');
+  } catch (err) {
+    console.error('[Comp] role add:', err.message);
+    return perms.safeReply(interaction,
+      '❌ Couldn\'t add your role. Ping a staff member — that one\'s on us.');
+  }
+
+  await getDb().collection('campaigns').updateOne(
+    { value: COMP.VALUE }, { $inc: { participants: 1 } }
+  );
+
+  return perms.safeReply(interaction,
+    `🎉 **You're in the ${COMP.TITLE}.**\n\n` +
+    `Everything you need is in <#${config.CHANNELS.COMP_ANNOUNCEMENT}> — ` +
+    `read <#${config.CHANNELS.COMP_RULES}> before you post, the caption is mandatory.\n\n` +
+    `Deadline: <t:${COMP.DEADLINE_UNIX}:R>`);
+}
+
+async function handleLeave(interaction) {
+  if (!await perms.enforceCooldown(interaction, 'compleave', 3000)) return;
+  if (!interaction.member.roles.cache.has(config.ROLES.COMPETITION)) {
+    return perms.safeReply(interaction, 'You\'re not entered.');
+  }
+  await interaction.member.roles.remove(config.ROLES.COMPETITION, 'Left competition').catch(() => {});
+  await getDb().collection('campaigns').updateOne(
+    { value: COMP.VALUE }, { $inc: { participants: -1 } }
+  );
+  return perms.safeReply(interaction,
+    'You\'ve left the competition. Any entries you already submitted still stand — ' +
+    'hit **Join** again if you change your mind.');
+}
+
+// ── Submission ──────────────────────────────────────────────────────────────
+
+const PLATFORM_PATTERNS = {
+  TikTok: /tiktok\.com/i,
+  Instagram: /instagram\.com\/(reel|p|tv)\//i,
+  'YouTube Shorts': /(youtube\.com\/shorts\/|youtu\.be\/)/i,
+};
+
+function detectPlatform(url) {
+  for (const [name, re] of Object.entries(PLATFORM_PATTERNS)) {
+    if (re.test(url)) return name;
+  }
+  return null;
+}
+
+async function handlePick(interaction) {
+  const value = interaction.values[0];
+  if (value === 'none') {
+    return perms.safeReply(interaction, 'Nothing is open for submissions right now.');
+  }
+
+  const campaign = await campaigns.getCampaign(value);
+  if (!campaign) return perms.safeReply(interaction, '❌ That campaign no longer exists.');
+
+  // Competition entries use their own modal (multi-platform, no budget checks).
+  if (campaign.type === 'competition') {
+    if (!interaction.member.roles.cache.has(config.ROLES.COMPETITION)) {
+      return perms.safeReply(interaction,
+        `❌ Join the competition first in <#${config.CHANNELS.COMP_ANNOUNCE_PUBLIC}>.`);
+    }
+    if (Date.now() > COMP.DEADLINE_UNIX * 1000) {
+      return perms.safeReply(interaction, '⌛ The deadline has passed.');
+    }
+    const modal = new ModalBuilder()
+      .setCustomId('comp:entrymodal')
+      .setTitle('Competition Entry')
+      .addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId('link')
+            .setLabel('Link to your edit')
+            .setPlaceholder('TikTok, Instagram Reel or YouTube Short')
+            .setStyle(TextInputStyle.Short).setRequired(true)),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId('name')
+            .setLabel('Edit name (optional)')
+            .setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(80)),
+      );
+    return interaction.showModal(modal);
+  }
+
+  // Normal campaigns fall through to the existing flow.
+  return campaigns.route({
+    ...interaction,
+    customId: `camp:submit:${value}`,
+    showModal: interaction.showModal.bind(interaction),
+  }).catch(() => perms.safeReply(interaction, '❌ Something went wrong.'));
+}
+
+async function handleEntryModal(interaction) {
+  await perms.safeDefer(interaction, true);
+
+  const rawLink = interaction.fields.getTextInputValue('link').trim();
+  const clipName = (interaction.fields.getTextInputValue('name') || '').trim() || 'Untitled';
+
+  if (Date.now() > COMP.DEADLINE_UNIX * 1000) {
+    return perms.safeReply(interaction, '⌛ The deadline passed while you were submitting.');
+  }
+
+  const platform = detectPlatform(rawLink);
+  if (!platform) {
+    return perms.safeReply(interaction,
+      '❌ That link isn\'t recognised. Entries must be a **TikTok**, ' +
+      '**Instagram Reel** or **YouTube Short**.');
+  }
+
+  const count = await getDb().collection('submissions').countDocuments({
+    userId: interaction.user.id, campaignValue: COMP.VALUE, status: { $ne: 'rejected' },
+  });
+  if (count >= COMP.MAX_ENTRIES) {
+    return perms.safeReply(interaction,
+      `❌ You've submitted the maximum of ${COMP.MAX_ENTRIES} entries.`);
+  }
+
+  // Only TikTok can be auto-verified — Instagram and YouTube get reviewed by hand.
+  let videoId = null, views = 0, likes = 0, thumb = null, handle = null;
+  if (platform === 'TikTok') {
+    const details = await tiktok.getVideoDetails(rawLink);
+    if (details.ok) {
+      videoId = details.videoId; views = details.views; likes = details.likes;
+      thumb = details.thumbnailUrl; handle = details.handle;
+    }
+  }
+
+  const dupe = await getDb().collection('submissions').findOne({
+    campaignValue: COMP.VALUE, link: rawLink.split('?')[0],
+  });
+  if (dupe) return perms.safeReply(interaction, '❌ That link is already entered.');
+
+  let inserted;
+  try {
+    inserted = await getDb().collection('submissions').insertOne({
+      userId: interaction.user.id,
+      username: interaction.user.username,
+      campaignValue: COMP.VALUE,
+      campaignLabel: COMP.TITLE,
+      clipName, platform,
+      link: rawLink.split('?')[0],
+      videoId, tiktokHandle: handle, thumbnailUrl: thumb,
+      status: 'pending',
+      views, likes, viewsAtSubmission: views,
+      earnings: 0,
+      submittedAt: new Date(), lastUpdated: new Date(),
+    });
+  } catch (err) {
+    if (err.code === 11000) return perms.safeReply(interaction, '❌ That link is already entered.');
+    throw err;
+  }
+
+  const subId = inserted.insertedId.toString();
+  const embed = new EmbedBuilder()
+    .setColor(0xf5b800)
+    .setTitle('🏆 Competition entry')
+    .setDescription(`[${clipName}](${rawLink})`)
+    .addFields(
+      { name: 'Editor', value: `<@${interaction.user.id}>`, inline: true },
+      { name: 'Platform', value: platform, inline: true },
+      { name: 'Views', value: platform === 'TikTok' ? views.toLocaleString('en-US') : 'Manual', inline: true },
+      { name: 'Entry #', value: `${count + 1} of ${COMP.MAX_ENTRIES}`, inline: true },
+    )
+    .setTimestamp();
+  if (thumb) embed.setThumbnail(thumb);
+
+  const reviewChannel = await interaction.client.channels.fetch(config.CHANNELS.SUBMISSIONS);
+  await reviewChannel.send({
+    embeds: [embed],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`camp:approve:${subId}`).setLabel('Approve').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`camp:reject:${subId}`).setLabel('Reject').setStyle(ButtonStyle.Danger),
+    )],
+  });
+
+  return perms.safeReply(interaction,
+    `✅ **Entry submitted** — [${clipName}](${rawLink})\n` +
+    `Platform: **${platform}** · Entry ${count + 1} of ${COMP.MAX_ENTRIES}\n\n` +
+    (platform === 'TikTok'
+      ? 'Views update every 12 hours.'
+      : 'Instagram and YouTube views are counted manually before judging.'));
+}
+
+// ── Leaderboard (posts only — no medals, no budget, no placements) ──────────
+
+async function buildBoard(viewerId = null) {
+  const rows = await getDb().collection('submissions').aggregate([
+    { $match: { campaignValue: COMP.VALUE, status: 'approved' } },
+    { $group: {
+        _id: '$userId', username: { $first: '$username' },
+        views: { $sum: '$views' }, posts: { $sum: 1 },
+    }},
+    { $sort: { views: -1 } },
+    { $limit: 50 },
+  ]).toArray();
+
+  const [totals] = await getDb().collection('submissions').aggregate([
+    { $match: { campaignValue: COMP.VALUE, status: { $in: ['approved', 'pending'] } } },
+    { $group: { _id: null, posts: { $sum: 1 }, views: { $sum: '$views' },
+                editors: { $addToSet: '$userId' } } },
+  ]).toArray();
+
+  const body = rows.slice(0, 20).map(r =>
+    `\`${String(r.posts).padStart(2, ' ')}\` **${r.username}** — ${r.views.toLocaleString('en-US')} views`
+  ).join('\n') || '_No approved entries yet._';
+
+  const embed = new EmbedBuilder()
+    .setColor(0xf5b800)
+    .setTitle(`🏆 ${COMP.TITLE}`)
+    .setDescription(body)
+    .addFields(
+      { name: 'Entries', value: String(totals?.posts || 0), inline: true },
+      { name: 'Editors', value: String(totals?.editors?.length || 0), inline: true },
+      { name: 'Total views', value: (totals?.views || 0).toLocaleString('en-US'), inline: true },
+    )
+    .setFooter({ text: 'Winners are chosen on quality and performance after the deadline.' })
+    .setTimestamp();
+
+  if (viewerId) {
+    const mine = rows.find(r => r._id === viewerId);
+    embed.addFields({
+      name: 'Your entries',
+      value: mine
+        ? `${mine.posts} approved · ${mine.views.toLocaleString('en-US')} views`
+        : 'No approved entries yet.',
+    });
+  }
+  return embed;
+}
+
+// ── /comp command ───────────────────────────────────────────────────────────
+
+const TARGETS = {
+  public: { channel: () => config.CHANNELS.COMP_ANNOUNCE_PUBLIC, build: buildPublicPanel, key: 'compPublicMsgId' },
+  announcement: { channel: () => config.CHANNELS.COMP_ANNOUNCEMENT, build: buildAnnouncementPanel, key: 'compAnnounceMsgId' },
+  rules: { channel: () => config.CHANNELS.COMP_RULES, build: buildRulesPanel, key: 'compRulesMsgId' },
+  submitinfo: { channel: () => config.CHANNELS.COMP_SUBMIT_INFO, build: buildSubmitInfoPanel, key: 'compSubmitInfoMsgId' },
+};
+
+async function command(interaction) {
+  if (!await perms.requireStaff(interaction)) return;
+  const sub = interaction.options.getSubcommand();
+
+  // ── preview: shows it to you only. Never pings. ──
+  if (sub === 'preview') {
+    await perms.safeDefer(interaction, true);
+    const which = interaction.options.getString('panel');
+    const target = TARGETS[which];
+    const payload = target.build();
+    return interaction.editReply({
+      content: `**Preview — \`${which}\`** → would post in <#${target.channel()}>\n` +
+               '_Nobody else can see this. Nothing has been posted._',
+      embeds: payload.embeds,
+      components: payload.components || [],
+    });
+  }
+
+  // ── setup: create the competition record ──
+  if (sub === 'setup') {
+    await perms.safeDefer(interaction, true);
+    await getDb().collection('campaigns').updateOne(
+      { value: COMP.VALUE },
+      { $set: {
+          value: COMP.VALUE, label: COMP.TITLE, type: 'competition',
+          tier: 'network', status: 'active',
+          rpm: 0, maxPayout: 0, minViews: 0, budget: 0,
+          hideBudget: true, hidePlacements: true,
+          endDate: new Date(COMP.DEADLINE_UNIX * 1000),
+          brief: COMP.BRIEF_FULL, createdAt: new Date(),
+      }},
+      { upsert: true }
+    );
+    await ensureSubmitPanel(interaction.client);
+    return interaction.editReply(
+      `✅ Competition created and the submit dropdown is live in <#${config.CHANNELS.SUBMIT}>.\n\n` +
+      'Preview the panels with `/comp preview`, then post them with `/comp post`.');
+  }
+
+  // ── post: actually publishes ──
+  if (sub === 'post') {
+    await perms.safeDefer(interaction, true);
+    const which = interaction.options.getString('panel');
+    const ping = interaction.options.getBoolean('ping') ?? false;
+    const target = TARGETS[which];
+
+    const channelId = target.channel();
+    if (!channelId || channelId.startsWith('SET_ME')) {
+      return interaction.editReply(`❌ No channel set for \`${which}\` in config.js.`);
+    }
+
+    const channel = await interaction.client.channels.fetch(channelId).catch(() => null);
+    if (!channel) return interaction.editReply(`❌ Can't reach <#${channelId}>.`);
+
+    const payload = target.build();
+    const body = {
+      embeds: payload.embeds,
+      components: payload.components || [],
+      ...(ping ? {
+        content: '@everyone',
+        allowedMentions: { parse: ['everyone'] },
+      } : { allowedMentions: { parse: [] } }),
+    };
+
+    const saved = await getMeta(target.key);
+    if (saved) {
+      const existing = await channel.messages.fetch(saved).catch(() => null);
+      if (existing) {
+        await existing.edit(body);
+        return interaction.editReply(`✅ Updated the existing \`${which}\` panel: ${existing.url}`);
+      }
+    }
+
+    const msg = await channel.send(body);
+    await setMeta(target.key, msg.id);
+    return interaction.editReply(
+      `✅ Posted \`${which}\` ${ping ? '**with an @everyone ping**' : 'silently (no ping)'}: ${msg.url}`);
+  }
+
+  // ── board ──
+  if (sub === 'board') {
+    await perms.safeDefer(interaction, true);
+    return interaction.editReply({ embeds: [await buildBoard(interaction.user.id)] });
+  }
+
+  // ── close ──
+  if (sub === 'close') {
+    await perms.safeDefer(interaction, true);
+    await getDb().collection('campaigns').updateOne(
+      { value: COMP.VALUE }, { $set: { status: 'ended', endedAt: new Date() } });
+    await ensureSubmitPanel(interaction.client);
+    return interaction.editReply('✅ Competition closed. It\'s been removed from the submit dropdown.');
+  }
+}
+
+// ── Router ──────────────────────────────────────────────────────────────────
+
+async function route(interaction) {
+  const id = interaction.customId;
+  if (!id.startsWith('comp:')) return false;
+  try {
+    if (id === 'comp:join') await handleJoin(interaction);
+    else if (id === 'comp:leave') await handleLeave(interaction);
+    else if (id === 'comp:pick') await handlePick(interaction);
+    else if (id === 'comp:entrymodal') await handleEntryModal(interaction);
+    else return false;
+  } catch (err) {
+    console.error('[Comp] route:', err);
+    await perms.safeReply(interaction, '❌ Something went wrong. Try again.');
+  }
+  return true;
+}
+
+module.exports = {
+  command, route, ensureSubmitPanel, buildSubmitDropdown, buildBoard,
+  buildPublicPanel, buildAnnouncementPanel, buildRulesPanel, buildSubmitInfoPanel,
+};
