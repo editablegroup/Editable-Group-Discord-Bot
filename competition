@@ -83,7 +83,9 @@ function buildRulesPanel() {
       '**3. Brief**\n' +
       `${COMP.BRIEF_PLAIN}\n\n` +
       '**4. Judged on views**\n' +
-      'Highest view count wins. Views are counted at the deadline.\n\n' +
+      'Submit as many edits as you like, **your single best-performing entry is ' +
+      'what counts.**.\n\n' +
+      'Views are counted at the deadline.\n\n' +
       '**5. Your own work**\n' +
       'Made by you, posted from your account. Reposts are disqualified.\n\n' +
       '**6. Posted during the competition**\n' +
@@ -387,9 +389,11 @@ async function handleEntryModal(interaction) {
 async function buildBoard(viewerId = null) {
   const rows = await getDb().collection('submissions').aggregate([
     { $match: { campaignValue: COMP.VALUE, status: 'approved' } },
+    { $sort: { views: -1 } },
     { $group: {
         _id: '$userId', username: { $first: '$username' },
-        views: { $sum: '$views' }, posts: { $sum: 1 },
+        views: { $max: '$views' }, posts: { $sum: 1 },
+        bestLink: { $first: '$link' },
     }},
     { $sort: { views: -1 } },
     { $limit: 50 },
@@ -401,8 +405,10 @@ async function buildBoard(viewerId = null) {
                 editors: { $addToSet: '$userId' } } },
   ]).toArray();
 
-  const body = rows.slice(0, 20).map(r =>
-    `\`${String(r.posts).padStart(2, ' ')}\` **${r.username}** — ${r.views.toLocaleString('en-US')} views`
+  const medal = i => ['🥇', '🥈', '🥉', '🏅'][i] || `\`${String(i + 1).padStart(2, ' ')}\``;
+  const body = rows.slice(0, 20).map((r, i) =>
+    `${medal(i)} **${r.username}** — [${r.views.toLocaleString('en-US')} views](${r.bestLink})` +
+    (r.posts > 1 ? ` · ${r.posts} entries` : '')
   ).join('\n') || '_No approved entries yet._';
 
   const embed = new EmbedBuilder()
@@ -414,15 +420,15 @@ async function buildBoard(viewerId = null) {
       { name: 'Editors', value: String(totals?.editors?.length || 0), inline: true },
       { name: 'Total views', value: (totals?.views || 0).toLocaleString('en-US'), inline: true },
     )
-    .setFooter({ text: 'Ranked by views. Counted at the deadline.' })
+    .setFooter({ text: 'Ranked by your best single entry. Final at the deadline.' })
     .setTimestamp();
 
-  if (viewerId) {
-    const mine = rows.find(r => r._id === viewerId);
+  const idx = rows.findIndex(r => r._id === viewerId);
     embed.addFields({
-      name: 'Your entries',
-      value: mine
-        ? `${mine.posts} approved · ${mine.views.toLocaleString('en-US')} views`
+      name: 'Your position',
+      value: idx >= 0
+        ? `**#${idx + 1}** — best entry ${rows[idx].views.toLocaleString('en-US')} views ` +
+          `· ${rows[idx].posts} submitted`
         : 'No approved entries yet.',
     });
   }
