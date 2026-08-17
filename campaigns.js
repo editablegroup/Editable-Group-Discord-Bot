@@ -226,7 +226,18 @@ async function postOffer(client, campaign) {
         : 'No active campaigns channel is set. Run /setup, or fill in CHANNELS.ACTIVE_CAMPAIGNS.');
   }
 
-  const channel = await client.channels.fetch(channelId);
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+
+  // A category cannot be posted into. This is an easy ID to get wrong, because
+  // "ACTIVE_CAMPAIGNS" is the name of a category in the sidebar as well as the
+  // channel campaigns are announced in, and the failure without this check is
+  // an unhelpful "channel.send is not a function" halfway through posting.
+  if (!channel || typeof channel.send !== 'function') {
+    throw new Error(
+      `The ${campaign.tier === 'core' ? 'Core campaigns' : 'active campaigns'} setting points at ` +
+      `something that cannot be posted into, usually a category rather than a text channel. ` +
+      `Set it with \`/channels set\` and post again.`);
+  }
 
   // Assets are re-uploaded from MongoDB every time. Discord's own attachment
   // URLs expire in roughly a day, so anything stored as a link would be dead

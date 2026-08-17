@@ -43,6 +43,15 @@ const ch = (key, fallbackName) => {
   } catch { /* ids not ready */ }
   return `#${fallbackName}`;
 };
+/**
+ * Name a category. Discord cannot link one: `<#categoryId>` renders as
+ * "#unknown" to every member, which is exactly what the welcome message did
+ * when it tried to point people at the campaigns category. Plain bold text is
+ * the only thing that reads correctly, so the label has to be kept in step with
+ * the real sidebar name by hand.
+ */
+const cat = key => `**${config.CATEGORY_LABELS[key]}**`;
+
 // Thousands separators matter here: "$1200.00" reads as a smaller number than
 // "$1,200.00" at a glance, and these figures are the whole pitch of a campaign.
 const money = n => `$${Number(n).toLocaleString('en-US', {
@@ -88,12 +97,12 @@ module.exports = {
 
     complete: (niches) =>
       '✅ **You\'re in.**\n' +
-      `Campaigns tagged ${niches.join(', ')} will ping you in ${ch('ACTIVE_CAMPAIGNS', 'active-campaigns')}.\n` +
+      `Campaigns tagged ${niches.join(', ')} will ping you under ${cat('ACTIVE_CAMPAIGNS')}.\n` +
       `Submit edits in ${ch('SUBMIT', 'submit')}. Views update every ${REFRESH_HOURS} hours.\n` +
       `Payment details live in ${ch('PAYMENTS', 'payment')} if you need to change them.`,
 
     alreadyDone: () =>
-      `You have already onboarded. Campaigns are in ${ch('ACTIVE_CAMPAIGNS', 'active-campaigns')}.`,
+      `You have already onboarded. Campaigns are under ${cat('ACTIVE_CAMPAIGNS')}.`,
 
     errBadHandle:
       'That is not a TikTok profile link. Open your profile in the TikTok app, ' +
@@ -141,8 +150,8 @@ module.exports = {
     modalName: 'Name for this edit (optional)',
 
     nothingOpen: () =>
-      `No campaign is open to you right now. New ones are posted in ` +
-      `${ch('ACTIVE_CAMPAIGNS', 'active-campaigns')} and ping the niches you picked at onboarding.`,
+      `No campaign is open to you right now. New ones are posted under ` +
+      `${cat('ACTIVE_CAMPAIGNS')} and ping the niches you picked at onboarding.`,
 
     submitted: (name, url, handle, views) =>
       `✅ **Submitted:** [${name}](${url})\n` +
@@ -151,7 +160,7 @@ module.exports = {
       `After approval the view count updates every ${REFRESH_HOURS} hours.`,
 
     noSubmissions: () =>
-      `No submissions yet. Pick a campaign in ${ch('ACTIVE_CAMPAIGNS', 'active-campaigns')}, post your edit, ` +
+      `No submissions yet. Pick a campaign under ${cat('ACTIVE_CAMPAIGNS')}, post your edit, ` +
       `then submit the link here.`,
 
     mineTitle: 'Your submissions',
@@ -265,8 +274,8 @@ module.exports = {
 
     statusTitle: '📈 Campaigns open to you',
     statusNone: () =>
-      `Nothing is open to you right now. New campaigns post in ` +
-      `${ch('ACTIVE_CAMPAIGNS', 'active-campaigns')}.`,
+      `Nothing is open to you right now. New campaigns post under ` +
+      `${cat('ACTIVE_CAMPAIGNS')}.`,
   },
 
   // ── Leaderboards ──────────────────────────────────────────────────────────

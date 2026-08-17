@@ -89,6 +89,15 @@ module.exports = {
     CAMPAIGN_PARENT: 'SET_ME_CAMPAIGN_PARENT_CATEGORY_ID',
   },
 
+  // ── Category names ────────────────────────────────────────────────────────
+  // Discord has no way to link a category. `<#categoryId>` renders as "#unknown"
+  // for everyone, which is what members saw when the welcome message tried to
+  // point them at the campaigns category. So categories are named in plain text
+  // instead, and the name has to match what is actually in the sidebar.
+  CATEGORY_LABELS: {
+    ACTIVE_CAMPAIGNS: '🔥 — ACTIVE Campaigns',
+  },
+
   // ── Logging ───────────────────────────────────────────────────────────────
   // Every key that is left as SET_ME is simply skipped, so you can wire these
   // up one at a time. `automod` is deliberately absent: Discord's own AutoMod
