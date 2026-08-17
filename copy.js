@@ -85,7 +85,7 @@ module.exports = {
       '✅ **You\'re in.**\n' +
       `Campaigns tagged ${niches.join(', ')} will ping you in ${ch('ACTIVE_CAMPAIGNS', 'active-campaigns')}.\n` +
       `Submit edits in ${ch('SUBMIT', 'submit')}. Views update every ${REFRESH_HOURS} hours.\n` +
-      `Payment details live in ${ch('PAYMENTS', 'payments')} if you need to change them.`,
+      `Payment details live in ${ch('PAYMENTS', 'payment')} if you need to change them.`,
 
     alreadyDone: () =>
       `You have already onboarded. Campaigns are in ${ch('ACTIVE_CAMPAIGNS', 'active-campaigns')}.`,

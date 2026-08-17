@@ -314,10 +314,16 @@ async function setup(interaction) {
     ? `Created niche roles: ${niches.join(', ')}.`
     : 'Niche roles already exist.');
 
-  const { created, reused } = await provision.ensureStandingChannels(interaction.guild);
+  const { created, reused, ambiguous } = await provision.ensureStandingChannels(interaction.guild);
   if (created.length) lines.push(`Created channels: ${created.join(', ')}.`);
   if (reused.length) lines.push(`Adopted existing channels: ${reused.join(', ')}.`);
   if (!created.length && !reused.length) lines.push('All channels were already configured.');
+  for (const a of ambiguous) {
+    lines.push(
+      `**${a.key}** matched ${a.candidates.length} channels (${a.candidates.join(' ')}), ` +
+      `so nothing was bound. Delete the one you do not want, or pick with ` +
+      `\`/channels set\`.`);
+  }
 
   // Panels go up once the channels they live in exist.
   const panel = require('./panel');
@@ -614,7 +620,7 @@ async function channelsCommand(interaction) {
     for (const spec of provision.STANDING_CHANNELS) {
       await ids.remember(`CHANNEL:${spec.key}`, null);
     }
-    const { created, reused } = await provision.ensureStandingChannels(interaction.guild);
+    const { created, reused, ambiguous } = await provision.ensureStandingChannels(interaction.guild);
 
     // Panels were pointing at the old channels, so drop the stored message IDs
     // and post fresh ones wherever they now belong.
@@ -626,10 +632,13 @@ async function channelsCommand(interaction) {
     await require('./tickets').ensurePanel(interaction.client);
     await leaderboard.publish(interaction.client, { rebuild: false });
 
-    return interaction.editReply(
+    return interaction.editReply((
       (reused.length ? `Now using your existing channels: ${reused.join(', ')}.\n` : '') +
       (created.length ? `Created because nothing matched: ${created.join(', ')}.\n` : '') +
-      `Panels reposted. Check with \`/channels list\`.`);
+      ambiguous.map(a =>
+        `**${a.key}** matched ${a.candidates.length} channels (${a.candidates.join(' ')}), ` +
+        `so nothing was bound. Delete the spare, or pick with \`/channels set\`.\n`).join('') +
+      `Panels reposted. Check with \`/channels list\`.`).slice(0, 1900));
   }
 
   const key = interaction.options.getString('what');

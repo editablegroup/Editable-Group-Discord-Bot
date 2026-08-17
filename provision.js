@@ -117,8 +117,11 @@ async function ensureNicheRoles(guild) {
  * `network` means Network editors can see it, `staff` means staff only.
  */
 const STANDING_CHANNELS = [
-  { key: 'PAYMENTS',    name: 'payments',       audience: 'network',
-    aliases: ['your-payouts', 'payouts', 'payment'] },
+  // NOT "your-payouts". That channel is where editors post screenshots of
+  // payments they have received from us, so putting the payment-method panel
+  // there would bury it under member uploads.
+  { key: 'PAYMENTS',    name: 'payment',        audience: 'network',
+    aliases: ['payments', 'payment-methods'] },
   { key: 'TICKETS',     name: 'open-a-ticket',  audience: 'network',
     aliases: ['tickets', 'ticket', 'support'] },
   { key: 'LEADERBOARD', name: 'leaderboard',    audience: 'network',
@@ -151,13 +154,30 @@ function normalizeName(name) {
   return String(name).toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-/** Find an existing text channel matching a spec's name or any of its aliases. */
+/**
+ * Find an existing text channel matching a spec's name, then its aliases.
+ *
+ * Ordered on purpose. Checking all the candidates at once and taking whatever
+ * Discord's cache returned first meant that a server with both "💶ㆍpayment" and
+ * a stray "payments" got whichever one happened to be cached earlier, which is
+ * not something you want deciding where a panel lands. The primary name wins,
+ * then each alias in the order it is written.
+ */
 function findExisting(guild, spec) {
-  const wanted = new Set(
-    [spec.name, ...(spec.aliases || [])].map(normalizeName));
+  const text = [...guild.channels.cache.values()]
+    .filter(c => c.type === ChannelType.GuildText);
 
-  return guild.channels.cache.find(c =>
-    c.type === ChannelType.GuildText && wanted.has(normalizeName(c.name))) || null;
+  for (const candidate of [spec.name, ...(spec.aliases || [])]) {
+    const wanted = normalizeName(candidate);
+    const hits = text.filter(c => normalizeName(c.name) === wanted);
+
+    // Two channels reducing to the same name are equally valid matches and
+    // there is no honest way to pick between them, so say so rather than
+    // guessing. Creating a third channel would be worse still.
+    if (hits.length > 1) return { channel: null, ambiguous: hits };
+    if (hits.length === 1) return { channel: hits[0], ambiguous: null };
+  }
+  return { channel: null, ambiguous: null };
 }
 
 function overwritesFor(guild, audience) {
@@ -185,6 +205,7 @@ function overwritesFor(guild, audience) {
 async function ensureStandingChannels(guild) {
   const created = [];
   const reused = [];
+  const ambiguous = [];
 
   for (const spec of STANDING_CHANNELS) {
     if (ids.channelId(spec.key)) continue;
@@ -192,10 +213,19 @@ async function ensureStandingChannels(guild) {
     // Adopt an existing channel wherever one matches. Its permissions are left
     // exactly as they are: you set that channel up deliberately, and /setup
     // overwriting your overwrites would be worse than not adopting it at all.
-    const existing = findExisting(guild, spec);
-    if (existing) {
-      await ids.remember(`CHANNEL:${spec.key}`, existing.id);
-      reused.push(`#${existing.name}`);
+    const match = findExisting(guild, spec);
+
+    if (match.ambiguous) {
+      ambiguous.push({
+        key: spec.key,
+        candidates: match.ambiguous.map(c => `<#${c.id}>`),
+      });
+      continue; // bind nothing, create nothing, let the operator decide
+    }
+
+    if (match.channel) {
+      await ids.remember(`CHANNEL:${spec.key}`, match.channel.id);
+      reused.push(`#${match.channel.name}`);
       continue;
     }
 
@@ -214,7 +244,7 @@ async function ensureStandingChannels(guild) {
     }
   }
 
-  return { created, reused };
+  return { created, reused, ambiguous };
 }
 
 // ── Campaign space (role + category + channels) ─────────────────────────────
