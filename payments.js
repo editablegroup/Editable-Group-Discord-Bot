@@ -29,8 +29,6 @@ const perms = require('./permissions');
 function buildPanelMessage() {
   const embed = new EmbedBuilder()
     .setColor(0x2b2d31)
-    .setTitle(copy.payments.panelTitle)
-    .setDescription(copy.payments.panelIntro())
     .addFields(
       { name: `💳 ${copy.payments.btnManage}`, value: copy.payments.fieldManage, inline: false },
     );

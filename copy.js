@@ -17,8 +17,13 @@ const config = require('./config');
  *    • Emoji only as a line-leading label.
  *
  *  Numbers are interpolated from config so the copy can never drift from the
- *  behaviour. If you change CLEARING_DAYS, every message that mentions it
- *  updates with it.
+ *  behaviour. If you change STATS.INTERVAL_MS, every message quoting the view
+ *  refresh interval updates with it.
+ *
+ *  Do not state a payout policy here. Clearing windows, minimum payouts and
+ *  batching schedules were written into this file from config defaults rather
+ *  than from anything anyone confirmed, and members read that as a promise.
+ *  Payout terms are announced by a human who knows what they actually are.
  * ============================================================================
  */
 
@@ -189,13 +194,6 @@ module.exports = {
 
   // ── Payments panel (#payments) ────────────────────────────────────────────
   payments: {
-    panelTitle: '💳 Payments',
-    panelIntro: () =>
-      `Payouts go to whichever method you set here, so keep it current. ` +
-      `Earnings clear ${config.PAYOUTS.CLEARING_DAYS} days after a campaign ends, which is ` +
-      `the window we use to catch view botting before money moves. Payouts go out in batches ` +
-      `after that, minimum ${money(config.PAYOUTS.MINIMUM_USD)}.`,
-
     btnManage: 'Manage Payment Methods',
     fieldManage: 'Switch between PayPal and bank transfer, or change your PayPal address.',
 
