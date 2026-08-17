@@ -138,6 +138,11 @@ const STANDING_CHANNELS = [
     aliases: ['onboard-logs'] },
   { key: 'LOG:SUBMISSION',  name: 'submission-logs',  audience: 'staff',
     aliases: ['submissions-logs', 'submit-logs'] },
+
+  // adoptOnly: this one is yours. If it is missing the bot leaves it missing
+  // rather than creating a rating channel nobody asked for.
+  { key: 'RATINGS', name: 'edits', audience: 'network', adoptOnly: true,
+    aliases: ['rate-edits', 'ratings'] },
 ];
 
 /**
@@ -228,6 +233,8 @@ async function ensureStandingChannels(guild) {
       reused.push(`#${match.channel.name}`);
       continue;
     }
+
+    if (spec.adoptOnly) continue; // nothing matched, and this one is never created
 
     try {
       const channel = await guild.channels.create({

@@ -87,6 +87,27 @@ module.exports = {
 
     // Where /campaign create puts each campaign's own category.
     CAMPAIGN_PARENT: 'SET_ME_CAMPAIGN_PARENT_CATEGORY_ID',
+
+    // Posts here get 1-5 reactions added automatically so members can score
+    // each other's edits.
+    RATINGS: 'SET_ME_RATINGS_CHANNEL_ID',
+  },
+
+  // ── Rating reactions ──────────────────────────────────────────────────────
+  RATINGS: {
+    // Keycap emoji are three code points each: the digit, U+FE0F, then U+20E3.
+    // Leaving out U+FE0F produces a different string that Discord rejects, so
+    // these are written out rather than built from the digits.
+    EMOJI: ['1\uFE0F\u20E3', '2\uFE0F\u20E3', '3\uFE0F\u20E3', '4\uFE0F\u20E3', '5\uFE0F\u20E3'],
+
+    // Only react to posts carrying an attachment or a link, so ordinary chat in
+    // the channel does not get a score attached to it. Set false to react to
+    // every message.
+    REQUIRE_MEDIA: true,
+
+    // Gap between reactions. Discord allows roughly one per 250ms per channel,
+    // and adding all five at once gets the last ones dropped silently.
+    DELAY_MS: 300,
   },
 
   // ── Category names ────────────────────────────────────────────────────────

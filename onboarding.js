@@ -97,7 +97,6 @@ async function ensurePanel(client) {
     }
 
     const msg = await channel.send(buildPanel());
-    await msg.pin().catch(() => {});
     await setMeta('onboardPanelMessageId', msg.id);
     console.log('[Onboarding] Static panel posted');
   } catch (err) {

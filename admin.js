@@ -588,6 +588,7 @@ const CHANNEL_KEYS = [
   { name: 'Core campaigns', value: 'CORE_CAMPAIGNS' },
   { name: 'Alerts', value: 'ALERTS' },
   { name: 'Campaign categories created under', value: 'CAMPAIGN_PARENT' },
+  { name: 'Edit ratings (1-5 reactions)', value: 'RATINGS' },
   { name: 'Log: system', value: 'LOG:SYSTEM' },
   { name: 'Log: join-leave', value: 'LOG:JOIN_LEAVE' },
   { name: 'Log: chat', value: 'LOG:CHAT' },

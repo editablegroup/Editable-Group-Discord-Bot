@@ -95,7 +95,6 @@ async function publish(client, { rebuild: shouldRebuild = true } = {}) {
       if (msg) { await msg.edit(payload); return; }
     }
     const msg = await channel.send(payload);
-    await msg.pin().catch(() => {});
     await setMeta('leaderboardMessageId', msg.id);
     console.log('[Leaderboard] All-time board posted');
   } catch (err) {

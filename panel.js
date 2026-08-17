@@ -72,7 +72,6 @@ async function ensurePanel(client) {
       if (msg) { await msg.edit(buildPanelMessage()); return; }
     }
     const msg = await channel.send(buildPanelMessage());
-    await msg.pin().catch(() => {});
     await setMeta('submitPanelMessageId', msg.id);
     console.log('[Panel] Submit panel posted');
   } catch (err) {

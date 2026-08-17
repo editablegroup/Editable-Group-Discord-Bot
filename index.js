@@ -21,6 +21,7 @@ const tickets = require('./tickets');
 const admin = require('./admin');
 const competition = require('./competition');
 const panel = require('./panel');
+const ratings = require('./ratings');
 
 /**
  * ============================================================================
@@ -496,6 +497,7 @@ client.once(Events.ClientReady, async () => {
   console.log(`[Bot] ${resolved} IDs resolved from the database`);
 
   logging.attach(client);
+  ratings.attach(client);
 
   const guild = await client.guilds.fetch(config.GUILD_ID).catch(() => null);
   if (guild) {
@@ -509,12 +511,12 @@ client.once(Events.ClientReady, async () => {
     }
   }
 
-  // Panels. Each is a no-op when its channel is not configured yet.
-  await onboarding.ensurePanel(client);
-  await panel.ensurePanel(client);
-  await payments.ensurePanel(client);
-  await tickets.ensurePanel(client);
-  await leaderboard.publish(client, { rebuild: false });
+  // Panels are deliberately NOT posted on boot.
+  //
+  // Railway redeploys on every push, so doing this here meant every change to
+  // any file reposted five panels and pinned them again. Panels are now only
+  // touched when you explicitly ask: /setup, /panels, /submitpanel, or
+  // /channels set after moving one.
 
   // Stats: first run after 30s, then on the configured interval.
   setTimeout(() => campaigns.updateAllStats(client).catch(console.error), 30_000);

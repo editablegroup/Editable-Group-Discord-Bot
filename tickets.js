@@ -72,7 +72,6 @@ async function ensurePanel(client) {
       if (msg) { await msg.edit(buildPanelMessage()); return; }
     }
     const msg = await channel.send(buildPanelMessage());
-    await msg.pin().catch(() => {});
     await setMeta('ticketPanelMessageId', msg.id);
     console.log('[Tickets] Panel posted');
   } catch (err) {
