@@ -69,6 +69,37 @@ module.exports = {
     // Optional: high-signal alerts (fraud flags, budget warnings, API failures).
     // Falls back to LOGS if left as SET_ME.
     ALERTS: 'SET_ME_ALERTS_CHANNEL_ID',
+
+    // Payment methods + balance panel. Members must be able to change a PayPal
+    // address after onboarding, so this channel is not optional.
+    PAYMENTS: 'SET_ME_PAYMENTS_CHANNEL_ID',
+
+    // Ticket panel. The old build posted it into LOGS, where members cannot see
+    // it, which meant nobody could open a ticket at all.
+    TICKETS: 'SET_ME_TICKETS_CHANNEL_ID',
+
+    // Where ticket channels get created. Leave as SET_ME to create them at the
+    // top level of the server instead.
+    TICKETS_CATEGORY: 'SET_ME_TICKETS_CATEGORY_ID',
+
+    // Persistent all-time leaderboard. One message, edited in place.
+    LEADERBOARD: 'SET_ME_LEADERBOARD_CHANNEL_ID',
+
+    // Where /campaign create puts each campaign's own category.
+    CAMPAIGN_PARENT: 'SET_ME_CAMPAIGN_PARENT_CATEGORY_ID',
+  },
+
+  // ── Logging ───────────────────────────────────────────────────────────────
+  // Every key that is left as SET_ME is simply skipped, so you can wire these
+  // up one at a time. `automod` is deliberately absent: Discord's own AutoMod
+  // does that job better than a hand-rolled filter would.
+  LOG_CHANNELS: {
+    SYSTEM: 'SET_ME_LOG_SYSTEM',            // boot, stats runs, API failures
+    JOIN_LEAVE: 'SET_ME_LOG_JOIN_LEAVE',    // member joins and leaves
+    CHAT: 'SET_ME_LOG_CHAT',                // message edits and deletions
+    SERVER: 'SET_ME_LOG_SERVER',            // channel/role/member updates
+    ONBOARDING: 'SET_ME_LOG_ONBOARDING',    // completed onboardings
+    SUBMISSION: 'SET_ME_LOG_SUBMISSION',    // submitted, approved, rejected
   },
 
   // ── Tier system ───────────────────────────────────────────────────────────
@@ -121,11 +152,77 @@ module.exports = {
 
   // ── Stats engine ──────────────────────────────────────────────────────────
   STATS: {
-    INTERVAL_MS: 12 * 60 * 60 * 1000, // 12h
+    // 3h. Every view count the members see is quoted from this number, so if you
+    // change it the copy in copy.js changes with it automatically.
+    //
+    // Going below 3h is a money decision, not a technical one: the lookup chain
+    // is free oEmbed, then free TikWM, then PAID RapidAPI. Four runs a day
+    // against 5,000 approved submissions is 20,000 lookups, and every one that
+    // falls through to RapidAPI costs you. MAX_PAID_LOOKUPS_PER_DAY is the
+    // circuit breaker for the day TikWM goes down and every lookup falls
+    // through at once.
+    INTERVAL_MS: 3 * 60 * 60 * 1000,   // 3h
     CONCURRENCY: 4,                    // parallel lookups — do not raise blindly
     DELAY_BETWEEN_MS: 250,             // politeness gap
     MAX_LOOKUPS_PER_RUN: 4000,         // hard ceiling so one run can't burn your quota
+    MAX_PAID_LOOKUPS_PER_DAY: 2000,    // RapidAPI circuit breaker
   },
+
+  // ── Niches ────────────────────────────────────────────────────────────────
+  // Picked at onboarding, granted as roles, used to decide who a campaign pings.
+  // Add one here and it appears in onboarding and in /campaign create with no
+  // other change. Leave roleId as SET_ME and the bot creates the role on boot.
+  NICHES: [
+    { value: 'film_tv', label: 'Film & TV', emoji: '🎬', roleId: 'SET_ME_NICHE_FILM_TV' },
+    { value: 'celebs',  label: 'Celebs',    emoji: '⭐', roleId: 'SET_ME_NICHE_CELEBS' },
+    { value: 'sports',  label: 'Sports',    emoji: '🏀', roleId: 'SET_ME_NICHE_SPORTS' },
+  ],
+
+  // ── Campaign automation ───────────────────────────────────────────────────
+  CAMPAIGN_AUTOMATION: {
+    // Create a role + private category + channels for every new campaign.
+    ENABLED: true,
+
+    // Channels created inside each campaign category.
+    CHANNELS: ['announcements', 'rules-and-resources', 'general'],
+
+    // What happens to the category when a campaign ends. 'archive' renames it
+    // and makes it read-only, keeping the history. 'delete' removes it.
+    // A server caps at 500 channels and 500 roles, and each campaign spends 4
+    // channels and 1 role, so with 'archive' you should sweep old ones by hand
+    // every few months.
+    ON_END: 'archive',
+    ARCHIVE_PREFIX: '🔒 ',
+
+    // Delete the campaign role this many days after the campaign ends, which
+    // frees the role slot. Set to 0 to keep roles forever.
+    // Defaults to the payout clearing window so nobody loses access to the
+    // channels while their money is still pending.
+    DELETE_ROLE_AFTER_DAYS: 7,
+
+    // Maximum size of a campaign asset (audio, example video) in megabytes.
+    // Stored in MongoDB GridFS, not as a Discord CDN link, because Discord's
+    // attachment URLs are signed and expire in roughly 24 hours. Anything
+    // linked rather than stored would be a dead link by the next day.
+    MAX_ASSET_MB: 25,
+    MAX_ASSETS: 4,
+  },
+
+  // ── Tickets ───────────────────────────────────────────────────────────────
+  // Buttons on the ticket panel, in order. `staffOnlyPing` marks the categories
+  // worth pinging staff for immediately.
+  TICKET_CATEGORIES: [
+    { value: 'general',    label: 'General Question',  emoji: '❓',
+      blurb: 'Anything the other buttons do not cover.' },
+    { value: 'report',     label: 'Report a User',     emoji: '🚨', staffOnlyPing: true,
+      blurb: 'Stolen edits, view botting, harassment. Include links.' },
+    { value: 'payment',    label: 'Payment Issue',     emoji: '💰', staffOnlyPing: true,
+      blurb: 'Missing payout, wrong amount, or changing your payment details.' },
+    { value: 'submission', label: 'Submission Issue',  emoji: '🎬',
+      blurb: 'An edit was rejected, or the submit button will not take your link.' },
+    { value: 'business',   label: 'Business Enquiry',  emoji: '💼',
+      blurb: 'Campaigns, sponsorships, and working with us.' },
+  ],
 
   // ── Rate limiting (per user, in-process) ──────────────────────────────────
   COOLDOWNS: {

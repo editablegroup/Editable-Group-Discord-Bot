@@ -7,11 +7,16 @@ const {
 } = require('discord.js');
 
 const config = require('./config');
+const copy = require('./copy');
+const ids = require('./ids');
 const { getDb } = require('./db');
 const perms = require('./permissions');
 const campaigns = require('./campaigns');
 const tiktok = require('./tiktok');
 const onboarding = require('./onboarding');
+const provision = require('./provision');
+const assets = require('./assets');
+const leaderboard = require('./leaderboard');
 
 /**
  * ============================================================================
@@ -33,15 +38,16 @@ const onboarding = require('./onboarding');
  */
 async function migrateCore(interaction) {
   if (!await perms.requireStaff(interaction)) return;
-  if (config.ROLES.CORE.startsWith('SET_ME')) {
-    return perms.safeReply(interaction, '❌ Set `ROLES.CORE` in config.js first.');
+  if (!ids.roleId('CORE')) {
+    return perms.safeReply(interaction,
+      'No Core role is configured. Run /setup, or set ROLES.CORE in config.js.');
   }
   await perms.safeDefer(interaction, true);
 
   const guild = interaction.guild;
   const members = await guild.members.fetch(); // one-off full fetch; fine here
   const legacy = members.filter(m =>
-    m.roles.cache.has(config.ROLES.LEGACY_EDITOR) && !m.roles.cache.has(config.ROLES.CORE)
+    m.roles.cache.has(config.ROLES.LEGACY_EDITOR) && !m.roles.cache.has(ids.roleId('CORE'))
   );
 
   await interaction.editReply(`Migrating ${legacy.size} members to Core…`);
@@ -49,7 +55,7 @@ async function migrateCore(interaction) {
   let ok = 0, fail = 0;
   for (const [, member] of legacy) {
     try {
-      await member.roles.add(config.ROLES.CORE, 'Legacy hand-picked editor → Core');
+      await member.roles.add(ids.roleId('CORE'), 'Legacy hand-picked editor promoted to Core');
       if (!member.roles.cache.has(config.ROLES.NETWORK)) {
         await member.roles.add(config.ROLES.NETWORK, 'Baseline access');
       }
@@ -74,7 +80,7 @@ async function migrateCore(interaction) {
   }
 
   await interaction.editReply(
-    `✅ Migration complete — **${ok}** granted Core, ${fail} failed.\n\n` +
+    `Migration complete. **${ok}** granted Core, ${fail} failed.\n\n` +
     `Everyone else who joins from here lands in **Network**.`);
 }
 
@@ -100,22 +106,22 @@ async function lockdown(interaction) {
   for (const [, channel] of guild.channels.cache) {
     if (channel.type === ChannelType.GuildCategory) continue;
     try {
-      if (channel.id === config.CHANNELS.ONBOARDING) {
+      if (channel.id === ids.channelId('ONBOARDING')) {
         await channel.permissionOverwrites.edit(everyone, {
           ViewChannel: true, SendMessages: false, ReadMessageHistory: true,
           AddReactions: false, CreatePublicThreads: false,
         });
-        results.push(`✅ #${channel.name} — visible to everyone, read-only`);
+        results.push(`✅ #${channel.name} visible to everyone, read-only`);
       } else {
         await channel.permissionOverwrites.edit(everyone, { ViewChannel: false });
-        if (channel.id === config.CHANNELS.CORE_CAMPAIGNS && !config.ROLES.CORE.startsWith('SET_ME')) {
-          await channel.permissionOverwrites.edit(config.ROLES.CORE, { ViewChannel: true });
-          results.push(`⭐ #${channel.name} — Core only`);
+        if (channel.id === ids.channelId('CORE_CAMPAIGNS') && ids.roleId('CORE')) {
+          await channel.permissionOverwrites.edit(ids.roleId('CORE'), { ViewChannel: true });
+          results.push(`⭐ #${channel.name} Core only`);
         }
       }
       await new Promise(r => setTimeout(r, 200));
     } catch (err) {
-      results.push(`❌ #${channel.name} — ${err.message}`);
+      results.push(`❌ #${channel.name} ${err.message}`);
     }
   }
 
@@ -128,49 +134,32 @@ async function lockdown(interaction) {
 
 // ── /campaign create|edit|post|end ──────────────────────────────────────────
 
+/**
+ * /campaign create is a slash command rather than a modal for one reason:
+ * modals cannot accept file uploads, and a campaign needs its audio and example
+ * videos attached. Slash commands support attachment options, so everything is
+ * captured in a single action.
+ *
+ * The attachments are downloaded and stored in MongoDB immediately, because
+ * Discord's attachment URLs are signed and expire in about a day.
+ */
 async function campaignCommand(interaction) {
   if (!await perms.requireStaff(interaction)) return;
   const sub = interaction.options.getSubcommand();
 
-  if (sub === 'create') {
-    const modal = new ModalBuilder()
-      .setCustomId('admin:campcreate')
-      .setTitle('New Campaign')
-      .addComponents(
-        new ActionRowBuilder().addComponents(new TextInputBuilder()
-          .setCustomId('label').setLabel('Track name — Artist')
-          .setPlaceholder('TAKE RISKS - thekidszn')
-          .setStyle(TextInputStyle.Short).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder()
-          .setCustomId('economics').setLabel('RPM / maxPayout / minViews / budget')
-          .setPlaceholder('1.00 / 350 / 1500 / 1000')
-          .setStyle(TextInputStyle.Short).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder()
-          .setCustomId('tier').setLabel('Tier: core or network')
-          .setPlaceholder('network')
-          .setStyle(TextInputStyle.Short).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder()
-          .setCustomId('days').setLabel('Runs for how many days?')
-          .setPlaceholder('14')
-          .setStyle(TextInputStyle.Short).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder()
-          .setCustomId('brief').setLabel('Creative brief')
-          .setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)),
-      );
-    return interaction.showModal(modal);
-  }
+  if (sub === 'create') return createCampaign(interaction);
 
   await perms.safeDefer(interaction, true);
   const value = interaction.options.getString('campaign');
   const campaign = await campaigns.getCampaign(value);
-  if (!campaign) return interaction.editReply('❌ Campaign not found.');
+  if (!campaign) return interaction.editReply('That campaign does not exist.');
 
   if (sub === 'post') {
     try {
       const msg = await campaigns.postOffer(interaction.client, campaign);
-      return interaction.editReply(`✅ Posted: ${msg.url}`);
+      return interaction.editReply(`Posted: ${msg.url}`);
     } catch (err) {
-      return interaction.editReply(`❌ ${err.message}`);
+      return interaction.editReply(err.message);
     }
   }
 
@@ -178,7 +167,26 @@ async function campaignCommand(interaction) {
     await getDb().collection('campaigns').updateOne(
       { value }, { $set: { status: campaigns.STATUS.ENDED, endedAt: new Date() } });
     await campaigns.rebuildLeaderboard(value);
-    return interaction.editReply(`✅ **${campaign.label}** ended. Leaderboard frozen.`);
+
+    // The all-time board is rebuilt on campaign end, which is the only moment
+    // the numbers become final.
+    await leaderboard.publish(interaction.client);
+
+    let retired = '';
+    try {
+      const result = await provision.retireCampaignSpace(interaction.guild, campaign);
+      if (result.done && result.mode === 'archived') {
+        retired = `\nCategory archived and set read-only. The campaign role is deleted in ` +
+          `${result.roleDeletesInDays} days, which is after earnings clear.`;
+      } else if (result.done) {
+        retired = '\nCategory, channels and role deleted.';
+      }
+    } catch (err) {
+      retired = `\nCould not tidy up the campaign channels: ${err.message}`;
+    }
+
+    return interaction.editReply(
+      `**${campaign.label}** ended. Leaderboard frozen and the all-time board rebuilt.${retired}`);
   }
 
   if (sub === 'budget') {
@@ -186,46 +194,157 @@ async function campaignCommand(interaction) {
     await getDb().collection('campaigns').updateOne({ value }, { $set: { budget: amount } });
     const status = await campaigns.budgetStatus({ ...campaign, budget: amount });
     return interaction.editReply(
-      `✅ Budget for **${campaign.label}** set to $${amount}.\n` +
-      `Committed: $${status.spent.toFixed(2)} · Remaining: $${status.remaining.toFixed(2)}`);
+      `Budget for **${campaign.label}** set to $${amount.toFixed(2)}. ` +
+      `$${status.spent.toFixed(2)} is already committed, leaving $${status.remaining.toFixed(2)}.`);
   }
 }
 
-async function handleCampaignCreateModal(interaction) {
-  if (!await perms.requireStaff(interaction)) return;
+async function createCampaign(interaction) {
   await perms.safeDefer(interaction, true);
 
-  const label = interaction.fields.getTextInputValue('label').trim();
-  const economics = interaction.fields.getTextInputValue('economics').split('/').map(s => parseFloat(s.trim()));
-  const tier = interaction.fields.getTextInputValue('tier').trim().toLowerCase();
-  const days = parseInt(interaction.fields.getTextInputValue('days').trim(), 10);
-  const brief = interaction.fields.getTextInputValue('brief').trim();
+  const label = interaction.options.getString('name').trim();
+  const rpm = interaction.options.getNumber('rpm');
+  const maxPayout = interaction.options.getNumber('max_payout');
+  const minViews = interaction.options.getInteger('min_views');
+  const budget = interaction.options.getNumber('pot');
+  const days = interaction.options.getInteger('days');
+  const brief = interaction.options.getString('brief').trim();
+  const tier = (interaction.options.getString('tier') || 'network').toLowerCase();
+  const platform = interaction.options.getString('platform') || 'TikTok';
+  const pingEveryone = interaction.options.getBoolean('ping_everyone') || false;
+  const nicheRaw = interaction.options.getString('niches') || '';
 
-  const [rpm, maxPayout, minViews, budget] = economics;
-  if ([rpm, maxPayout, minViews, budget].some(n => !Number.isFinite(n))) {
-    return interaction.editReply('❌ Economics must be four numbers: `RPM / maxPayout / minViews / budget`');
+  if (rpm <= 0 || maxPayout <= 0 || minViews < 0 || budget <= 0 || days <= 0) {
+    return interaction.editReply(
+      'Rate, max pay-out, pot and length all have to be above zero.');
   }
-  if (!['core', 'network', 'all'].includes(tier)) {
-    return interaction.editReply('❌ Tier must be `core` or `network`.');
+  if (maxPayout > budget) {
+    return interaction.editReply(
+      `Max pay-out per video ($${maxPayout}) is larger than the whole pot ($${budget}), ` +
+      `so one video could take everything. Raise the pot or lower the cap.`);
   }
 
-  const value = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40);
+  // Niches: comma separated, validated against config so a typo does not
+  // silently create a campaign nobody gets pinged about.
+  const niches = nicheRaw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  const unknown = niches.filter(n => !ids.nicheByValue(n));
+  if (unknown.length) {
+    return interaction.editReply(
+      `Unknown niche: ${unknown.join(', ')}. Valid values are ` +
+      `${config.NICHES.map(n => `\`${n.value}\``).join(', ')}.`);
+  }
+
+  const value = provision.slug(label).replace(/-/g, '_').slice(0, 40);
   if (await campaigns.getCampaign(value)) {
-    return interaction.editReply(`❌ A campaign with the key \`${value}\` already exists.`);
+    return interaction.editReply(
+      `A campaign with the key \`${value}\` already exists. Use a different name.`);
+  }
+
+  // Attachments first. If one fails we stop before creating anything, rather
+  // than leaving a half-built campaign behind.
+  const stored = [];
+  for (let i = 1; i <= config.CAMPAIGN_AUTOMATION.MAX_ASSETS; i++) {
+    const file = interaction.options.getAttachment(`file${i}`);
+    if (!file) continue;
+    try {
+      stored.push(await assets.store(value, file));
+    } catch (err) {
+      return interaction.editReply(err.message);
+    }
   }
 
   const endDate = new Date(Date.now() + days * 86_400_000);
-  await getDb().collection('campaigns').insertOne({
-    value, label, tier, rpm, maxPayout, minViews, budget, brief,
+  const campaign = {
+    value, label, tier, rpm, maxPayout, minViews, budget, brief, platform,
+    niches, pingEveryone,
+    assets: stored,
     endDate, status: campaigns.STATUS.ACTIVE,
     participants: 0, createdAt: new Date(), createdBy: interaction.user.id,
-  });
+  };
+  await getDb().collection('campaigns').insertOne(campaign);
 
-  await interaction.editReply(
-    `✅ Created **${label}** (\`${value}\`)\n` +
-    `${tier === 'core' ? '⭐ Core only' : '🔓 Open to Network'} · $${rpm}/1K · cap $${maxPayout} · ` +
-    `budget $${budget} · ends <t:${Math.floor(endDate.getTime() / 1000)}:R>\n\n` +
-    `Post it with \`/campaign post campaign:${value}\``);
+  // Role, private category and channels.
+  let spaceLine = '';
+  if (config.CAMPAIGN_AUTOMATION.ENABLED) {
+    try {
+      const space = await provision.createCampaignSpace(interaction.guild, campaign);
+      campaign.roleId = space.roleId;
+      campaign.space = space;
+      spaceLine =
+        `\nCreated the **${space.categoryName}** role and category with ` +
+        `${Object.keys(space.channels).length} channels. Joining the campaign unlocks it.`;
+    } catch (err) {
+      spaceLine =
+        `\nThe campaign exists but its role and category were not created: ${err.message}`;
+    }
+  }
+
+  const pingLine = pingEveryone
+    ? 'Posting it pings @everyone.'
+    : niches.length
+      ? `Posting it pings ${niches.map(n => ids.nicheByValue(n).label).join(', ')}.`
+      : `No niches set, so posting it pings the whole ${tier === 'core' ? 'Core' : 'Network'} role.`;
+
+  return interaction.editReply(
+    `Created **${label}** (\`${value}\`).\n` +
+    `$${rpm.toFixed(2)} per 1,000 views, max $${maxPayout.toFixed(2)} per video, ` +
+    `pot $${budget.toFixed(2)}, minimum ${minViews.toLocaleString('en-US')} views.\n` +
+    `Ends <t:${Math.floor(endDate.getTime() / 1000)}:F>.\n` +
+    `${stored.length} file${stored.length === 1 ? '' : 's'} stored.` +
+    spaceLine +
+    `\n${pingLine}\n\nPost it with \`/campaign post campaign:${value}\`.`);
+}
+
+// ── /setup — provision the server ───────────────────────────────────────────
+
+/**
+ * Creates every channel and role the bot needs and records the IDs in Mongo,
+ * so a fresh server does not need anyone to paste snowflakes into config.js.
+ * Safe to run repeatedly: anything already resolved is skipped.
+ */
+async function setup(interaction) {
+  if (!await perms.requireStaff(interaction)) return;
+  await perms.safeDefer(interaction, true);
+
+  const capability = provision.checkCapability(interaction.guild);
+  const lines = [];
+
+  const niches = await provision.ensureNicheRoles(interaction.guild);
+  lines.push(niches.length
+    ? `Created niche roles: ${niches.join(', ')}.`
+    : 'Niche roles already exist.');
+
+  const { created, reused } = await provision.ensureStandingChannels(interaction.guild);
+  if (created.length) lines.push(`Created channels: ${created.join(', ')}.`);
+  if (reused.length) lines.push(`Adopted existing channels: ${reused.join(', ')}.`);
+  if (!created.length && !reused.length) lines.push('All channels were already configured.');
+
+  // Panels go up once the channels they live in exist.
+  const panel = require('./panel');
+  const payments = require('./payments');
+  const tickets = require('./tickets');
+  await onboarding.ensurePanel(interaction.client);
+  await panel.ensurePanel(interaction.client);
+  await payments.ensurePanel(interaction.client);
+  await tickets.ensurePanel(interaction.client);
+  await leaderboard.publish(interaction.client);
+  lines.push('Panels posted in onboarding, submit, payments, tickets and leaderboard.');
+
+  const stillMissing = ids.missing();
+  if (stillMissing.length) {
+    lines.push(`Still unset: ${stillMissing.join(', ')}. Fill these in config.js by hand.`);
+  }
+
+  if (!capability.ok) {
+    lines.push(`\n**Permissions to fix:**\n${capability.problems.join('\n')}`);
+  } else {
+    lines.push(
+      `\nRole position looks fine. ${capability.rolesAbove} roles sit above the bot, ` +
+      `${capability.roleCount} roles and ${capability.channelCount} channels exist ` +
+      `against Discord's limit of 500 each.`);
+  }
+
+  return interaction.editReply(lines.join('\n').slice(0, 1900));
 }
 
 // ── Core promotion ──────────────────────────────────────────────────────────
@@ -238,9 +357,9 @@ async function promote(interaction) {
   const reason = interaction.options.getString('reason') || 'Performance';
   const member = await interaction.guild.members.fetch(user.id).catch(() => null);
   if (!member) return interaction.editReply('❌ Not in the server.');
-  if (member.roles.cache.has(config.ROLES.CORE)) return interaction.editReply('Already Core.');
+  if (member.roles.cache.has(ids.roleId('CORE'))) return interaction.editReply('They are already Core.');
 
-  await member.roles.add(config.ROLES.CORE, `Promoted by ${interaction.user.tag}: ${reason}`);
+  await member.roles.add(ids.roleId('CORE'), `Promoted by ${interaction.user.tag}: ${reason}`);
   await getDb().collection('editors').updateOne(
     { userId: user.id },
     { $set: { tier: config.TIERS.CORE, corePromotedAt: new Date(), coreReason: reason, corePromotedBy: interaction.user.id } }
@@ -259,7 +378,7 @@ async function promote(interaction) {
   } catch { /* DMs closed */ }
 
   await campaigns.alert(interaction.client,
-    `⭐ <@${user.id}> promoted to **Core** by <@${interaction.user.id}> — ${reason}`);
+    `⭐ <@${user.id}> promoted to **Core** by <@${interaction.user.id}>. Reason: ${reason}`);
   return interaction.editReply(`✅ <@${user.id}> is now Core.`);
 }
 
@@ -269,7 +388,7 @@ async function demote(interaction) {
   const user = interaction.options.getUser('user');
   const member = await interaction.guild.members.fetch(user.id).catch(() => null);
   if (!member) return interaction.editReply('❌ Not in the server.');
-  await member.roles.remove(config.ROLES.CORE, `Demoted by ${interaction.user.tag}`).catch(() => {});
+  await member.roles.remove(ids.roleId('CORE'), `Demoted by ${interaction.user.tag}`).catch(() => {});
   await getDb().collection('editors').updateOne(
     { userId: user.id }, { $set: { tier: config.TIERS.NETWORK, coreRemovedAt: new Date() } });
   return interaction.editReply(`✅ <@${user.id}> moved back to Network.`);
@@ -303,7 +422,7 @@ async function coreNominations(interaction) {
   const candidates = [];
   for (const r of rows) {
     const member = await guild.members.fetch(r._id).catch(() => null);
-    if (!member || member.roles.cache.has(config.ROLES.CORE)) continue;
+    if (!member || member.roles.cache.has(ids.roleId('CORE'))) continue;
     const total = r.approved + r.rejected;
     const rejectRate = total ? r.rejected / total : 0;
     const avg = r.totalViews / r.approved;
@@ -364,7 +483,7 @@ async function dashboard(interaction) {
   const usage = tiktok.getUsage();
   const embed = new EmbedBuilder()
     .setColor(config.BRAND_COLOR)
-    .setTitle('Editable Group — Operations')
+    .setTitle('Editable Group operations')
     .addFields(
       { name: '👥 Server', value:
         `${guild.memberCount.toLocaleString('en-US')} members\n` +
@@ -395,7 +514,7 @@ async function editorLookup(interaction) {
   const user = interaction.options.getUser('user');
   const db = getDb();
   const editor = await db.collection('editors').findOne({ userId: user.id });
-  if (!editor) return interaction.editReply('No profile — they haven\'t onboarded.');
+  if (!editor) return interaction.editReply('No profile. They have not onboarded.');
 
   const subs = await db.collection('submissions')
     .find({ userId: user.id }).sort({ submittedAt: -1 }).limit(50).toArray();
@@ -408,89 +527,40 @@ async function editorLookup(interaction) {
     .setTitle(`${editor.tier === config.TIERS.CORE ? '⭐ ' : ''}${editor.username}`)
     .setThumbnail(user.displayAvatarURL())
     .addFields(
-      { name: 'TikTok', value: editor.tiktokHandle ? `[@${editor.tiktokHandle}](https://www.tiktok.com/@${editor.tiktokHandle})` : '—', inline: true },
+      { name: 'TikTok', value: editor.tiktokHandle ? `[@${editor.tiktokHandle}](https://www.tiktok.com/@${editor.tiktokHandle})` : 'Not set', inline: true },
       { name: 'Tier', value: editor.tier || 'network', inline: true },
       { name: 'Joined', value: `<t:${Math.floor(new Date(editor.joinedAt).getTime() / 1000)}:R>`, inline: true },
-      { name: 'Genres', value: (editor.genres || []).join(', ') || '—', inline: false },
-      { name: 'Styles', value: (editor.styles || []).join(', ') || '—', inline: false },
+      { name: 'Niches', value:
+        (editor.niches || []).map(n => ids.nicheByValue(n)?.label || n).join(', ') || 'None',
+        inline: false },
       { name: 'Performance', value:
-        `${approved.length} approved / ${subs.length} submitted\n` +
-        `${totalViews.toLocaleString('en-US')} views · $${totalEarned.toFixed(2)} earned`, inline: false },
+        `${approved.length} approved of ${subs.length} submitted\n` +
+        `${totalViews.toLocaleString('en-US')} views, $${totalEarned.toFixed(2)} earned`, inline: false },
       { name: 'Payment', value:
-        editor.paymentMethod === 'paypal' ? `PayPal — ${editor.paypalEmail}`
-        : editor.paymentMethod === 'crypto' ? `Crypto — \`${editor.cryptoWallet}\``
-        : editor.paymentMethod || '—', inline: false },
+        editor.paymentMethod === 'paypal' ? `PayPal, ${editor.paypalEmail}`
+        : editor.paymentMethod === 'bank' ? 'Bank transfer, details collected at payout'
+        : 'Not set', inline: false },
     );
+
+  // Balance comes from the ledger, not the submission rows, so referral bonuses
+  // and manual adjustments are included.
+  const ledger = await db.collection('earnings').find({ userId: user.id }).toArray();
+  const byState = s => ledger.filter(r => r.state === s).reduce((n, r) => n + (r.amount || 0), 0);
+  embed.addFields({
+    name: 'Balance',
+    value: `$${byState('cleared').toFixed(2)} available, ` +
+      `$${byState('pending').toFixed(2)} pending, ` +
+      `$${byState('paid').toFixed(2)} paid out`,
+    inline: false,
+  });
+
   return interaction.editReply({ embeds: [embed] });
 }
 
 // ── Payouts ─────────────────────────────────────────────────────────────────
-
-async function balance(interaction) {
-  if (!await perms.requireOnboarded(interaction)) return;
-  await perms.safeDefer(interaction, true);
-
-  const rows = await getDb().collection('earnings')
-    .find({ userId: interaction.user.id }).toArray();
-  const pending = rows.filter(r => r.state === 'pending').reduce((n, r) => n + r.amount, 0);
-  const cleared = rows.filter(r => r.state === 'cleared').reduce((n, r) => n + r.amount, 0);
-  const paid = rows.filter(r => r.state === 'paid').reduce((n, r) => n + r.amount, 0);
-
-  const embed = new EmbedBuilder()
-    .setColor(config.BRAND_COLOR)
-    .setTitle('Your balance')
-    .addFields(
-      { name: '💵 Available', value: `$${cleared.toFixed(2)}`, inline: true },
-      { name: '⏳ Pending', value: `$${pending.toFixed(2)}`, inline: true },
-      { name: '✅ Paid out', value: `$${paid.toFixed(2)}`, inline: true },
-    )
-    .setFooter({ text:
-      `Pending clears ${config.PAYOUTS.CLEARING_DAYS} days after a campaign ends. ` +
-      `Minimum payout $${config.PAYOUTS.MINIMUM_USD}.` });
-
-  const components = cleared >= config.PAYOUTS.MINIMUM_USD
-    ? [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('admin:payout').setLabel('Request Payout')
-          .setEmoji('💸').setStyle(ButtonStyle.Success))]
-    : [];
-
-  return interaction.editReply({ embeds: [embed], components });
-}
-
-async function requestPayout(interaction) {
-  if (!await perms.requireOnboarded(interaction)) return;
-  await perms.safeDefer(interaction, true);
-
-  const db = getDb();
-  const open = await db.collection('payoutRequests')
-    .findOne({ userId: interaction.user.id, status: 'pending' });
-  if (open) return interaction.editReply('You already have a payout request open.');
-
-  const rows = await db.collection('earnings')
-    .find({ userId: interaction.user.id, state: 'cleared' }).toArray();
-  const cleared = rows.reduce((n, r) => n + r.amount, 0);
-  if (cleared < config.PAYOUTS.MINIMUM_USD) {
-    return interaction.editReply(
-      `Minimum payout is $${config.PAYOUTS.MINIMUM_USD}. You have $${cleared.toFixed(2)} available.`);
-  }
-
-  const editor = await db.collection('editors').findOne({ userId: interaction.user.id });
-  await db.collection('payoutRequests').insertOne({
-    userId: interaction.user.id,
-    username: interaction.user.username,
-    amount: cleared,
-    method: editor?.paymentMethod,
-    destination: editor?.paypalEmail || editor?.cryptoWallet || 'bank (see ticket)',
-    status: 'pending',
-    createdAt: new Date(),
-  });
-
-  await campaigns.alert(interaction.client,
-    `💸 **Payout request** — <@${interaction.user.id}> requested **$${cleared.toFixed(2)}** ` +
-    `via ${editor?.paymentMethod || 'unset'}.`);
-  return interaction.editReply(
-    `✅ Requested **$${cleared.toFixed(2)}**. You'll get a DM once it's sent.`);
-}
+//
+// balance() and requestPayout() now live in payments.js, next to the panel that
+// owns those buttons. Tickets moved to tickets.js for the same reason.
 
 /**
  * Moves pending earnings to cleared for campaigns that ended more than
@@ -510,93 +580,32 @@ async function clearMaturedEarnings() {
   return res.modifiedCount;
 }
 
-// ── Tickets ─────────────────────────────────────────────────────────────────
-
-async function openTicket(interaction) {
-  if (!await perms.enforceCooldown(interaction, 'ticket', 30_000)) return;
-  if (!await perms.requireOnboarded(interaction)) return;
-  await perms.safeDefer(interaction, true);
-
-  const db = getDb();
-  const existing = await db.collection('tickets')
-    .findOne({ userId: interaction.user.id, status: 'open' });
-  if (existing) {
-    const ch = await interaction.client.channels.fetch(existing.channelId).catch(() => null);
-    if (ch) return interaction.editReply(`You already have a ticket open: <#${ch.id}>`);
-    await db.collection('tickets').updateOne({ _id: existing._id }, { $set: { status: 'closed' } });
-  }
-
-  // Ticket channels are capped at 500 per guild. Track and warn before you hit
-  // the wall mid-launch and channel creation starts failing silently.
-  const openCount = await db.collection('tickets').countDocuments({ status: 'open' });
-  if (openCount >= 150) {
-    await campaigns.alert(interaction.client,
-      `⚠️ **${openCount} tickets open.** Discord caps a server at 500 channels. Close some.`);
-  }
-
-  try {
-    const channel = await interaction.guild.channels.create({
-      name: `ticket-${interaction.user.username}`.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 90),
-      type: ChannelType.GuildText,
-      permissionOverwrites: [
-        { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles] },
-        { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
-        ...config.STAFF_IDS.map(id => ({ id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] })),
-      ],
-    });
-
-    await db.collection('tickets').insertOne({
-      userId: interaction.user.id, username: interaction.user.username,
-      channelId: channel.id, status: 'open', createdAt: new Date(),
-    });
-
-    await channel.send({
-      content: `<@${interaction.user.id}>`,
-      embeds: [new EmbedBuilder().setColor(config.BRAND_COLOR)
-        .setTitle('Ticket opened')
-        .setDescription('Describe your issue and a staff member will reply. Use `/close` when done.')],
-    });
-    return interaction.editReply(`✅ Ticket created: <#${channel.id}>`);
-  } catch (err) {
-    console.error('[Ticket]', err.message);
-    return interaction.editReply('❌ Couldn\'t create a ticket. Check the bot has **Manage Channels**.');
-  }
-}
-
-async function closeTicket(interaction) {
-  const db = getDb();
-  const ticket = await db.collection('tickets').findOne({ channelId: interaction.channelId, status: 'open' });
-  if (!ticket) return perms.safeReply(interaction, '❌ This isn\'t an open ticket channel.');
-  if (ticket.userId !== interaction.user.id && !perms.isStaff(interaction.user.id)) {
-    return perms.safeReply(interaction, '❌ Only the ticket owner or staff can close this.');
-  }
-  await db.collection('tickets').updateOne({ _id: ticket._id },
-    { $set: { status: 'closed', closedAt: new Date(), closedBy: interaction.user.id } });
-  await interaction.reply({ content: '🔒 Closing in 5 seconds…' });
-  setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
-}
-
 // ── Router ──────────────────────────────────────────────────────────────────
 
+/**
+ * Legacy IDs are still routed. `open_ticket` was the old single ticket button
+ * and `admin:payout` the old balance button, both of which are still sitting in
+ * panels already posted in the server. They forward to the modules that own
+ * them now rather than breaking for anyone who presses an old message.
+ */
 async function route(interaction) {
   const id = interaction.customId;
   if (!id.startsWith('admin:') && id !== 'open_ticket') return false;
   try {
-    if (id === 'open_ticket') await openTicket(interaction);
-    else if (id === 'admin:payout') await requestPayout(interaction);
-    else if (id === 'admin:campcreate') await handleCampaignCreateModal(interaction);
-    else return false;
+    if (id === 'open_ticket') {
+      await require('./tickets').open(interaction, 'general');
+    } else if (id === 'admin:payout') {
+      await require('./payments').requestPayout(interaction);
+    } else return false;
   } catch (err) {
     console.error('[Admin] route error:', err);
-    await perms.safeReply(interaction, '❌ Something went wrong.');
+    await perms.safeReply(interaction, copy.common.errIn('admin'));
   }
   return true;
 }
 
 module.exports = {
-  migrateCore, lockdown, campaignCommand, handleCampaignCreateModal,
+  migrateCore, lockdown, campaignCommand, createCampaign, setup,
   promote, demote, coreNominations, dashboard, editorLookup,
-  balance, requestPayout, clearMaturedEarnings,
-  openTicket, closeTicket, route,
+  clearMaturedEarnings, route,
 };

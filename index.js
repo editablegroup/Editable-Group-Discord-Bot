@@ -3,14 +3,21 @@
 const {
   Client, GatewayIntentBits, Partials, Events, Options,
   SlashCommandBuilder, REST, Routes, PermissionFlagsBits,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, MessageFlags,
+  EmbedBuilder,
 } = require('discord.js');
 
 const config = require('./config');
+const copy = require('./copy');
 const db = require('./db');
+const ids = require('./ids');
 const perms = require('./permissions');
+const logging = require('./logging');
+const provision = require('./provision');
 const onboarding = require('./onboarding');
 const campaigns = require('./campaigns');
+const leaderboard = require('./leaderboard');
+const payments = require('./payments');
+const tickets = require('./tickets');
 const admin = require('./admin');
 const competition = require('./competition');
 const panel = require('./panel');
@@ -19,13 +26,15 @@ const panel = require('./panel');
  * ============================================================================
  *  EDITABLE GROUP BOT — ENTRY POINT
  * ============================================================================
- *  index.js does four things and nothing else:
+ *  index.js does five things and nothing else:
  *    1. builds the client
  *    2. declares slash commands
  *    3. routes interactions to the right module
- *    4. boots
+ *    4. runs the schedules
+ *    5. boots
  *
- *  All business logic lives in campaigns.js / admin.js / onboarding.js.
+ *  All business logic lives in the modules. All user-facing text lives in
+ *  copy.js. All channel and role IDs resolve through ids.js.
  * ============================================================================
  */
 
@@ -38,22 +47,24 @@ const client = new Client({
     GatewayIntentBits.GuildInvites,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.MessageContent, // privileged — needed for DM screenshots
+    GatewayIntentBits.MessageContent, // privileged — needed for #chat-logs
   ],
   partials: [Partials.Channel, Partials.Message],
 
   /**
-   * Cache limits. This is not optional at your target size.
+   * Cache limits. Not optional at this size.
    *
    * By default discord.js caches every message it sees and every member it
    * touches, forever. On a 2,000-member server with active chat that is
-   * hundreds of megabytes of RSS growth over days — and on Railway's Hobby
-   * plan you are billed per GB of RAM per minute, so an unbounded cache is
-   * both a crash risk and a bill.
+   * hundreds of megabytes of RSS growth over days, and Railway bills per GB per
+   * minute, so an unbounded cache is both a crash risk and a bill.
+   *
+   * MessageManager is raised from 50 to 200 because #chat-logs can only report
+   * the "before" text of an edit or deletion if the message is still cached.
    */
   makeCache: Options.cacheWithLimits({
     ...Options.DefaultMakeCacheSettings,
-    MessageManager: 50,
+    MessageManager: 200,
     GuildMemberManager: { maxSize: 500, keepOverLimit: m => m.id === client.user?.id },
     UserManager: { maxSize: 500, keepOverLimit: u => u.id === client.user?.id },
     PresenceManager: 0,
@@ -62,7 +73,7 @@ const client = new Client({
     ThreadManager: 25,
   }),
   sweepers: {
-    messages: { interval: 600, lifetime: 900 },
+    messages: { interval: 900, lifetime: 3600 },
     users: { interval: 3600, filter: () => u => u.id !== client.user?.id },
   },
 });
@@ -76,17 +87,6 @@ client.on('shardError', err => console.error('[ShardError]', err));
 
 // ── Command definitions ─────────────────────────────────────────────────────
 
-/**
- * Admin commands get BOTH:
- *   • an "(ADMIN ONLY)" description prefix — the greyed-out text preview you
- *     screenshotted from PayPerClip
- *   • setDefaultMemberPermissions(Administrator)
- *
- * With HARD_HIDE_ADMIN_COMMANDS = true (the default), Discord hides them from
- * non-admins entirely, so editors never even see them in the picker. Flip it to
- * false in config.js if you'd rather they be visible-but-locked like the
- * screenshot. Either way the runtime requireStaff() check is the real lock.
- */
 const ADMIN_PREFIX = '(ADMIN ONLY) ';
 
 function adminCmd(builder) {
@@ -99,44 +99,58 @@ function adminCmd(builder) {
   return builder;
 }
 
+const NICHE_CHOICES = config.NICHES.map(n => ({ name: n.label, value: n.value }));
+
 const commands = [
-  // ── Editor commands (open to Network+) ──────────────────────────────────
+  // ── Editor commands ──────────────────────────────────────────────────────
   new SlashCommandBuilder()
     .setName('submissions')
-    .setDescription('View your submissions, views and earnings')
+    .setDescription('Your edits, their status, views and earnings')
     .setDMPermission(false),
 
   new SlashCommandBuilder()
     .setName('balance')
-    .setDescription('Check your available, pending and paid-out balance')
+    .setDescription('Pending, cleared and paid-out earnings')
     .setDMPermission(false),
 
+  // No required option any more: it opens a dropdown of the campaigns you can
+  // see, which is one fewer thing to type and cannot 404 on a bad name.
   new SlashCommandBuilder()
     .setName('leaderboard')
-    .setDescription('See the top editors on a campaign')
-    .addStringOption(o => o.setName('campaign')
-      .setDescription('Which campaign').setRequired(true).setAutocomplete(true))
+    .setDescription('Pick a campaign and see its full leaderboard')
     .setDMPermission(false),
 
   new SlashCommandBuilder()
     .setName('campaigns')
-    .setDescription('List every campaign you have access to')
+    .setDescription('Every campaign open to you, with rate, pot left and deadline')
     .setDMPermission(false),
 
   new SlashCommandBuilder()
     .setName('close')
-    .setDescription('Close the current ticket')
+    .setDescription('Close this ticket')
     .setDMPermission(false),
 
   // ── Admin commands ───────────────────────────────────────────────────────
+  adminCmd(new SlashCommandBuilder()
+    .setName('setup')
+    .setDescription('Create missing channels, roles and panels')),
+
   adminCmd(new SlashCommandBuilder()
     .setName('dashboard')
     .setDescription('Full operational overview')),
 
   adminCmd(new SlashCommandBuilder()
     .setName('editor')
-    .setDescription('Look up a single editor profile')
+    .setDescription('Look up one editor: stats, views, earnings, payment method')
     .addUserOption(o => o.setName('user').setDescription('The editor').setRequired(true))),
+
+  adminCmd(new SlashCommandBuilder()
+    .setName('update')
+    .setDescription('Refresh data on demand')
+    .addSubcommand(s => s.setName('views')
+      .setDescription('Force a TikTok view refresh now, outside the 3 hour cycle'))
+    .addSubcommand(s => s.setName('leaderboard')
+      .setDescription('Rebuild and repost the all-time leaderboard'))),
 
   adminCmd(new SlashCommandBuilder()
     .setName('promote')
@@ -151,7 +165,7 @@ const commands = [
 
   adminCmd(new SlashCommandBuilder()
     .setName('nominations')
-    .setDescription('Network editors who have earned Core consideration')),
+    .setDescription('Network editors who have met the Core bar')),
 
   adminCmd(new SlashCommandBuilder()
     .setName('migratecore')
@@ -162,12 +176,8 @@ const commands = [
     .setDescription('Hide every channel from @everyone except #onboarding')),
 
   adminCmd(new SlashCommandBuilder()
-    .setName('updatestats')
-    .setDescription('Force a TikTok stats refresh now')),
-
-  adminCmd(new SlashCommandBuilder()
     .setName('panels')
-    .setDescription('Re-post the onboarding and support panels')),
+    .setDescription('Repost onboarding, submit, payments and ticket panels')),
 
   adminCmd(new SlashCommandBuilder()
     .setName('submitpanel')
@@ -203,20 +213,57 @@ const commands = [
     .addSubcommand(s => s.setName('close')
       .setDescription('Close the competition'))),
 
+  /**
+   * /campaign create takes attachments, which is why it is a command with
+   * options rather than a modal. Discord modals cannot accept file uploads, and
+   * a campaign post needs its audio and example videos.
+   */
   adminCmd(new SlashCommandBuilder()
     .setName('campaign')
     .setDescription('Manage campaigns')
-    .addSubcommand(s => s.setName('create').setDescription('Create a new campaign'))
-    .addSubcommand(s => s.setName('post').setDescription('Post the offer to its channel')
+    .addSubcommand(s => s.setName('create')
+      .setDescription('Create a campaign, its role, its category and its channels')
+      .addStringOption(o => o.setName('name')
+        .setDescription('Shown as the campaign title, eg "no na - HONK!"').setRequired(true))
+      .addNumberOption(o => o.setName('rpm')
+        .setDescription('Dollars per 1,000 views, eg 2').setRequired(true))
+      .addNumberOption(o => o.setName('max_payout')
+        .setDescription('Maximum one video can earn, eg 1200').setRequired(true))
+      .addIntegerOption(o => o.setName('min_views')
+        .setDescription('Views before a video earns anything, eg 2000').setRequired(true))
+      .addNumberOption(o => o.setName('pot')
+        .setDescription('Total budget for the campaign, eg 3000').setRequired(true))
+      .addIntegerOption(o => o.setName('days')
+        .setDescription('How many days it runs for').setRequired(true))
+      .addStringOption(o => o.setName('brief')
+        .setDescription('What editors should make').setRequired(true).setMaxLength(1000))
+      .addStringOption(o => o.setName('tier')
+        .setDescription('Who can join. Defaults to network')
+        .addChoices(
+          { name: 'Network (everyone onboarded)', value: 'network' },
+          { name: 'Core only', value: 'core' },
+        ))
+      .addStringOption(o => o.setName('niches')
+        .setDescription('Comma separated niches to ping, eg film_tv,celebs')
+        .setAutocomplete(true))
+      .addStringOption(o => o.setName('platform')
+        .setDescription('Defaults to TikTok'))
+      .addBooleanOption(o => o.setName('ping_everyone')
+        .setDescription('Ping @everyone instead of the niche roles. Defaults to no'))
+      .addAttachmentOption(o => o.setName('file1').setDescription('Audio or example video'))
+      .addAttachmentOption(o => o.setName('file2').setDescription('Audio or example video'))
+      .addAttachmentOption(o => o.setName('file3').setDescription('Audio or example video'))
+      .addAttachmentOption(o => o.setName('file4').setDescription('Audio or example video')))
+    .addSubcommand(s => s.setName('post').setDescription('Post the campaign to its channel')
       .addStringOption(o => o.setName('campaign').setDescription('Which campaign')
         .setRequired(true).setAutocomplete(true)))
-    .addSubcommand(s => s.setName('end').setDescription('End a campaign')
+    .addSubcommand(s => s.setName('end').setDescription('End a campaign and archive its channels')
       .addStringOption(o => o.setName('campaign').setDescription('Which campaign')
         .setRequired(true).setAutocomplete(true)))
-    .addSubcommand(s => s.setName('budget').setDescription('Change a campaign budget')
+    .addSubcommand(s => s.setName('budget').setDescription('Change a campaign pot')
       .addStringOption(o => o.setName('campaign').setDescription('Which campaign')
         .setRequired(true).setAutocomplete(true))
-      .addNumberOption(o => o.setName('amount').setDescription('New budget in USD')
+      .addNumberOption(o => o.setName('amount').setDescription('New pot in USD')
         .setRequired(true)))),
 ].map(c => c.toJSON());
 
@@ -228,10 +275,12 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isAutocomplete()) return handleAutocomplete(interaction);
 
     // Component interactions delegate to their owning module. Each router
-    // returns true once it handles the ID, so we stop immediately instead of
-    // falling through every branch like the old single-handler design did.
+    // returns true once it handles the ID, so we stop immediately rather than
+    // falling through every branch.
     if (interaction.isButton() || interaction.isModalSubmit() || interaction.isStringSelectMenu()) {
       if (await onboarding.route(interaction)) return;
+      if (await payments.route(interaction)) return;
+      if (await tickets.route(interaction)) return;
       if (await competition.route(interaction)) return;
       if (await panel.route(interaction)) return;
       if (await campaigns.route(interaction)) return;
@@ -243,12 +292,13 @@ client.on(Events.InteractionCreate, async interaction => {
     if (!await perms.enforceCooldown(interaction, 'cmd', config.COOLDOWNS.COMMAND_MS)) return;
 
     switch (interaction.commandName) {
-      case 'submissions':  return mySubmissions(interaction);
-      case 'balance':      return admin.balance(interaction);
+      case 'submissions':  return panel.handleMySubmissions(interaction);
+      case 'balance':      return payments.balance(interaction);
       case 'leaderboard':  return leaderboardCommand(interaction);
-      case 'campaigns':    return campaignList(interaction);
-      case 'close':        return admin.closeTicket(interaction);
+      case 'campaigns':    return panel.handleStatus(interaction);
+      case 'close':        return tickets.close(interaction);
 
+      case 'setup':        return admin.setup(interaction);
       case 'dashboard':    return admin.dashboard(interaction);
       case 'editor':       return admin.editorLookup(interaction);
       case 'promote':      return admin.promote(interaction);
@@ -259,34 +309,44 @@ client.on(Events.InteractionCreate, async interaction => {
       case 'campaign':     return admin.campaignCommand(interaction);
       case 'comp':         return competition.command(interaction);
       case 'submitpanel':  return panel.command(interaction);
-
-      case 'updatestats': {
-        if (!await perms.requireStaff(interaction)) return;
-        await perms.safeDefer(interaction, true);
-        const r = await campaigns.updateAllStats(client, { force: true });
-        return interaction.editReply(
-          `✅ Refresh complete — ${r.updated} updated, ${r.failed} failed.\n` +
-          `TikWM ${r.usage.tikwm} · RapidAPI ${r.usage.rapidapi}`);
-      }
+      case 'update':       return updateCommand(interaction);
 
       case 'panels': {
         if (!await perms.requireStaff(interaction)) return;
         await perms.safeDefer(interaction, true);
         await onboarding.ensurePanel(client);
-        await postSupportPanel(client);
-        return interaction.editReply('✅ Panels refreshed.');
+        await panel.ensurePanel(client);
+        await payments.ensurePanel(client);
+        await tickets.ensurePanel(client);
+        return interaction.editReply(
+          'Reposted the onboarding, submit, payments and ticket panels.');
       }
     }
   } catch (err) {
     console.error('[Interaction]', err);
-    await perms.safeReply(interaction, '❌ Something went wrong. Try again in a moment.');
+    await perms.safeReply(interaction, copy.common.errIn('that command'));
   }
 });
 
 async function handleAutocomplete(interaction) {
   try {
     const focused = interaction.options.getFocused(true);
+
+    if (focused.name === 'niches') {
+      // Suggest each niche on its own, plus every niche at once, and let the
+      // typed value through so combinations can be entered by hand.
+      const all = config.NICHES.map(n => n.value).join(',');
+      const options = [
+        ...config.NICHES.map(n => ({ name: n.label, value: n.value })),
+        { name: 'Every niche', value: all },
+      ];
+      const typed = focused.value.trim();
+      if (typed) options.unshift({ name: typed.slice(0, 100), value: typed.slice(0, 100) });
+      return interaction.respond(options.slice(0, 25));
+    }
+
     if (focused.name !== 'campaign') return interaction.respond([]);
+
     const list = perms.isStaff(interaction.user.id)
       ? await campaigns.listCampaigns()
       : await campaigns.visibleCampaigns(interaction.member, { activeOnly: false });
@@ -299,109 +359,68 @@ async function handleAutocomplete(interaction) {
   } catch { return interaction.respond([]).catch(() => {}); }
 }
 
-// ── Editor-facing command implementations ───────────────────────────────────
-
-async function mySubmissions(interaction) {
-  if (!await perms.requireOnboarded(interaction)) return;
-  await perms.safeDefer(interaction, true);
-
-  const subs = await db.getDb().collection('submissions')
-    .find({ userId: interaction.user.id }).sort({ submittedAt: -1 }).limit(25).toArray();
-  if (!subs.length) return interaction.editReply('📭 No submissions yet.');
-
-  const icon = { approved: '✅', pending: '⏳', rejected: '❌', flagged: '⚠️' };
-  const totals = subs.filter(s => s.status === 'approved')
-    .reduce((a, s) => ({ v: a.v + (s.views || 0), e: a.e + (s.earnings || 0) }), { v: 0, e: 0 });
-
-  const embed = new EmbedBuilder()
-    .setColor(config.BRAND_COLOR)
-    .setTitle('Your submissions')
-    .setDescription(subs.slice(0, 15).map(s =>
-      `${icon[s.status] || '•'} [${s.clipName}](${s.link}) — ${(s.views || 0).toLocaleString('en-US')} views` +
-      (s.earnings ? ` · **$${s.earnings.toFixed(2)}**` : '')
-    ).join('\n'))
-    .addFields(
-      { name: 'Total views', value: totals.v.toLocaleString('en-US'), inline: true },
-      { name: 'Total earned', value: `$${totals.e.toFixed(2)}`, inline: true },
-    )
-    .setFooter({ text: 'Views refresh every 12 hours' });
-  return interaction.editReply({ embeds: [embed] });
-}
+// ── /leaderboard and /update ────────────────────────────────────────────────
 
 async function leaderboardCommand(interaction) {
   if (!await perms.requireOnboarded(interaction)) return;
   await perms.safeDefer(interaction, true);
-  const value = interaction.options.getString('campaign');
-  const campaign = await campaigns.getCampaign(value);
-  if (!campaign) return interaction.editReply('❌ Campaign not found.');
-  if (!perms.canAccessCampaign(interaction.member, campaign)) {
-    return interaction.editReply(perms.DENY.core);
-  }
-  const embed = await campaigns.buildLeaderboardEmbed(value, interaction.user.id);
-  return interaction.editReply({ embeds: [embed] });
-}
 
-async function campaignList(interaction) {
-  if (!await perms.requireOnboarded(interaction)) return;
-  await perms.safeDefer(interaction, true);
-  const list = await campaigns.visibleCampaigns(interaction.member);
-  if (!list.length) return interaction.editReply('No campaigns are open to you right now.');
+  const list = await panel.accessibleCampaigns(interaction.member);
+  if (!list.length) return interaction.editReply(copy.campaign.statusNone());
 
-  const lines = [];
-  for (const c of list) {
-    const b = await campaigns.budgetStatus(c);
-    lines.push(
-      `${c.tier === 'core' ? '⭐' : '🔓'} **${c.label}**\n` +
-      `　$${c.rpm.toFixed(2)}/1K · cap $${c.maxPayout} · ` +
-      `${Math.round(100 - b.percentUsed)}% budget left · ` +
-      `ends <t:${Math.floor(new Date(c.endDate).getTime() / 1000)}:R>`);
+  if (list.length === 1) {
+    const embed = await campaigns.buildLeaderboardEmbed(list[0].value, interaction.user.id);
+    return interaction.editReply({ embeds: [embed] });
   }
+
+  const { ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
   return interaction.editReply({
-    embeds: [new EmbedBuilder().setColor(config.BRAND_COLOR)
-      .setTitle('Campaigns open to you').setDescription(lines.join('\n\n'))],
+    content: copy.leaderboard.pickPrompt,
+    components: [new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId('panel:board')
+        .setPlaceholder(copy.leaderboard.pickPlaceholder)
+        .addOptions(list.slice(0, 25).map(c => ({
+          label: c.label.slice(0, 100),
+          value: c.value,
+        }))))],
   });
 }
 
-// ── Support panel ───────────────────────────────────────────────────────────
+async function updateCommand(interaction) {
+  if (!await perms.requireStaff(interaction)) return;
+  const sub = interaction.options.getSubcommand();
+  await perms.safeDefer(interaction, true);
 
-async function postSupportPanel(client) {
-  try {
-    const channelId = config.CHANNELS.LOGS; // change to your support channel
-    const channel = await client.channels.fetch(channelId);
-    const saved = await db.getMeta('supportPanelMessageId');
-    const payload = {
-      embeds: [new EmbedBuilder().setColor(config.BRAND_COLOR)
-        .setTitle('Need help?')
-        .setDescription('Open a ticket for payment questions, submission issues, or anything else.')],
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('open_ticket').setLabel('Open Ticket')
-          .setEmoji('🎟️').setStyle(ButtonStyle.Primary))],
-    };
-    if (saved) {
-      const msg = await channel.messages.fetch(saved).catch(() => null);
-      if (msg) return msg.edit(payload);
-    }
-    const msg = await channel.send(payload);
-    await db.setMeta('supportPanelMessageId', msg.id);
-  } catch (err) { console.error('[SupportPanel]', err.message); }
+  if (sub === 'views') {
+    const r = await campaigns.updateAllStats(client, { force: true });
+    return interaction.editReply(
+      `Refresh done. ${r.updated} updated, ${r.failed} failed.\n` +
+      `Free lookups: ${r.usage.tikwm} TikWM. Paid: ${r.usage.rapidapi} RapidAPI, ` +
+      `${r.paidToday} so far today against a ceiling of ` +
+      `${config.STATS.MAX_PAID_LOOKUPS_PER_DAY}.`);
+  }
+
+  if (sub === 'leaderboard') {
+    await leaderboard.publish(client);
+    return interaction.editReply('All-time leaderboard rebuilt and reposted.');
+  }
 }
 
-// ── Member join ─────────────────────────────────────────────────────────────
+// ── Member join: invite attribution ─────────────────────────────────────────
 
 /**
- * Deliberately does NOT post a message.
+ * Deliberately does NOT post a welcome message. The old behaviour sent one per
+ * join, and during a TikTok-driven spike that is hundreds of sends into one
+ * channel, which Discord rate-limits at roughly 5 messages per 5 seconds. Most
+ * would fail and the channel would be unreadable. The static panel in
+ * #onboarding is strictly better. #join-leave logging covers the audit side.
  *
- * The old behaviour sent one welcome message per join. During a TikTok-driven
- * spike that is hundreds of sends into one channel, which Discord rate-limits
- * (roughly 5 messages per 5 seconds per channel). Most would fail, the channel
- * would be unreadable, and the static panel is a strictly better UX anyway.
- *
- * Invite attribution is throttled: fetching the invite list on every single
- * join is a per-guild rate limit you WILL hit during a spike, and once you're
- * limited the referral data is wrong anyway. We refresh at most once per
- * REFERRALS.CACHE_REFRESH_MS and only attribute when exactly one invite code
- * incremented — an honest "unknown" beats a confidently wrong attribution that
- * pays the wrong person a referral bonus.
+ * Invite attribution is throttled: fetching the invite list on every join is a
+ * per-guild rate limit you WILL hit during a spike, and once limited the data
+ * is wrong anyway. We refresh at most once per CACHE_REFRESH_MS and attribute
+ * only when exactly one invite code incremented. An honest "unknown" beats a
+ * confidently wrong attribution that pays the wrong person a referral bonus.
  */
 const inviteCache = new Map();
 let lastInviteFetch = 0;
@@ -454,28 +473,51 @@ client.on(Events.GuildMemberAdd, async member => {
 client.once(Events.ClientReady, async () => {
   console.log(`[Bot] Logged in as ${client.user.tag}`);
 
+  const resolved = await ids.warm();
+  console.log(`[Bot] ${resolved} IDs resolved from the database`);
+
+  logging.attach(client);
+
   const guild = await client.guilds.fetch(config.GUILD_ID).catch(() => null);
   if (guild) {
     const fresh = await refreshInvites(guild, true);
     if (fresh) for (const [c, d] of fresh) inviteCache.set(c, d);
     console.log(`[Bot] Cached ${inviteCache.size} invites`);
+
+    const capability = provision.checkCapability(guild);
+    if (!capability.ok) {
+      console.warn('[Bot] Permission problems:', capability.problems.join(' '));
+    }
   }
 
+  // Panels. Each is a no-op when its channel is not configured yet.
   await onboarding.ensurePanel(client);
+  await panel.ensurePanel(client);
+  await payments.ensurePanel(client);
+  await tickets.ensurePanel(client);
+  await leaderboard.publish(client, { rebuild: false });
 
-  // Stats: first run after 30s, then every 12h.
+  // Stats: first run after 30s, then on the configured interval.
   setTimeout(() => campaigns.updateAllStats(client).catch(console.error), 30_000);
   setInterval(() => campaigns.updateAllStats(client).catch(console.error), config.STATS.INTERVAL_MS);
 
-  // Earnings clearing: hourly.
-  setInterval(() => admin.clearMaturedEarnings().catch(console.error), 3_600_000);
+  // Hourly: clear matured earnings, then delete campaign roles past their
+  // grace period.
+  setInterval(() => {
+    admin.clearMaturedEarnings().catch(console.error);
+    provision.sweepExpiredRoles(client).catch(console.error);
+  }, 3_600_000);
 
-  // Config sanity check — better to see this in logs at boot than to discover
-  // it when a Core campaign posts into a channel that doesn't exist.
-  const unset = [];
-  if (config.ROLES.CORE.startsWith('SET_ME')) unset.push('ROLES.CORE');
-  if (config.CHANNELS.CORE_CAMPAIGNS.startsWith('SET_ME')) unset.push('CHANNELS.CORE_CAMPAIGNS');
-  if (unset.length) console.warn(`[Bot] ⚠️  Unset config values: ${unset.join(', ')}`);
+  const unset = ids.missing();
+  if (unset.length) {
+    console.warn(`[Bot] Unresolved IDs (run /setup): ${unset.join(', ')}`);
+  }
+
+  logging.system('Bot online',
+    `Logged in as ${client.user.tag}.\n` +
+    `Views refresh every ${copy.REFRESH_HOURS} hours.\n` +
+    (unset.length ? `Unresolved IDs: ${unset.length}. Run /setup.` : 'All IDs resolved.'),
+    unset.length ? 'warn' : 'good');
 });
 
 // ── Boot ────────────────────────────────────────────────────────────────────
@@ -487,9 +529,9 @@ client.once(Events.ClientReady, async () => {
 
     await db.connect();
 
-    // Register commands BEFORE login and await it. The old code fired this as a
-    // floating promise at module load, so a failure was invisible and commands
-    // could silently not exist.
+    // Register commands BEFORE login and await it. Firing this as a floating
+    // promise at module load makes a failure invisible and lets commands
+    // silently not exist.
     const rest = new REST({ version: '10' }).setToken(config.TOKEN);
     await rest.put(Routes.applicationGuildCommands(config.CLIENT_ID, config.GUILD_ID), { body: commands });
     console.log(`[Bot] Registered ${commands.length} commands`);

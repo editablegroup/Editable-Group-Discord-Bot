@@ -2,6 +2,7 @@
 
 const { MessageFlags } = require('discord.js');
 const config = require('./config');
+const copy = require('./copy');
 
 /**
  * ============================================================================
@@ -32,7 +33,8 @@ function isStaff(userId) {
 function getTier(member) {
   if (!member) return config.TIERS.NONE;
   if (isStaff(member.id)) return config.TIERS.STAFF;
-  if (member.roles.cache.has(config.ROLES.CORE)) return config.TIERS.CORE;
+  const coreRole = require('./ids').roleId('CORE');
+  if (coreRole && member.roles.cache.has(coreRole)) return config.TIERS.CORE;
   // Your original hand-picked 100 — vetted before onboarding existed, so the
   // legacy Editor role counts as full access. No re-onboarding.
   if (member.roles.cache.has(config.ROLES.LEGACY_EDITOR)) return config.TIERS.CORE;
@@ -67,11 +69,12 @@ function canAccessCampaign(member, campaign) {
 
 // ── Runtime guards ──────────────────────────────────────────────────────────
 
+// Kept as getters so the wording lives in copy.js and the channel IDs resolve
+// at call time rather than at module load, when they may not be known yet.
 const DENY = {
-  staff: '🔒 This is an admin-only command.',
-  onboard: '👋 Finish onboarding in <#' + config.CHANNELS.ONBOARDING + '> first.',
-  core: '⭐ This is a **Core** campaign. Core is earned through consistent '
-      + 'performance on open campaigns — keep posting and you\'ll be considered.',
+  get staff() { return copy.common.denyStaff; },
+  get onboard() { return copy.common.denyOnboard(); },
+  get core() { return copy.campaign.denyCore(); },
 };
 
 /**
@@ -124,7 +127,7 @@ async function enforceCooldown(interaction, action, ms) {
   if (isStaff(interaction.user.id)) return true;
   const wait = checkCooldown(interaction.user.id, action, ms);
   if (wait === 0) return true;
-  await safeReply(interaction, `⏳ Slow down — try again in ${wait}s.`);
+  await safeReply(interaction, copy.common.cooldown(wait));
   return false;
 }
 

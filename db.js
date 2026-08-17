@@ -71,6 +71,18 @@ async function ensureIndexes() {
     db.collection('referrals').createIndex({ inviteeId: 1 }),
     db.collection('referrals').createIndex({ inviterId: 1 }),
 
+    // Tickets. The open-ticket lookup runs on every button press, and the
+    // channelId lookup runs on every /close.
+    db.collection('tickets').createIndex({ userId: 1, status: 1 }),
+    db.collection('tickets').createIndex({ channelId: 1 }),
+
+    // Campaign assets stored in GridFS. Indexed by campaign so purging one
+    // campaign's files does not scan the whole bucket.
+    db.collection('campaignAssets.files').createIndex({ 'metadata.campaignValue': 1 }),
+
+    // Campaign role cleanup sweep, run hourly.
+    db.collection('campaigns').createIndex({ 'space.roleDeleteAfter': 1 }, { sparse: true }),
+
     db.collection('metadata').createIndex({ key: 1 }, { unique: true }),
 
     // Onboarding state moves OUT of process memory and into Mongo, with a TTL.

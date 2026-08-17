@@ -1,62 +1,113 @@
 'use strict';
 
 const {
-  ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder,
-  ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder,
+  EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags,
 } = require('discord.js');
 
 const config = require('./config');
-const { getDb } = require('./db');
+const copy = require('./copy');
+const ids = require('./ids');
+const { getDb, getMeta, setMeta } = require('./db');
 const perms = require('./permissions');
 const campaigns = require('./campaigns');
 
 /**
  * ============================================================================
- *  LEGACY SUBMIT PANEL
+ *  SUBMIT PANEL (#submit)
  * ============================================================================
- *  Handlers for the original four-button panel already posted in #submit.
- *  These custom IDs (submit_clip, view_submissions, leaderboard_button,
- *  campaign_status) lived in the old single-file bot and had no home after the
- *  refactor, which is why the buttons timed out.
+ *  Four buttons: Submit Edit, My Submissions, Leaderboard, Campaign Status.
  *
- *  Submit Edit now opens a dropdown listing everything the member can submit
- *  to — normal campaigns plus the competition, if they've joined it.
+ *  Submit Edit opens a dropdown of everything the member can currently submit
+ *  to, then a modal for the link. Two steps rather than one because a member in
+ *  four campaigns needs to say which one this edit is for, and guessing wrong
+ *  pays them from the wrong pot.
+ *
+ *  The old custom IDs (submit_clip, view_submissions, leaderboard_button,
+ *  campaign_status) are still routed, so panels already posted in the server
+ *  keep working after this deploys.
  * ============================================================================
  */
 
 const COMP = config.COMPETITION;
 
-/** Build the campaign picker for a given member. */
-async function buildPicker(member) {
-  const list = await campaigns.listCampaigns({ status: 'active' });
-  const options = [];
+// ── Panel message ───────────────────────────────────────────────────────────
 
-  for (const c of list) {
-    if (c.type === 'competition') {
-      // Competition only shows for people who actually joined it.
-      if (!member.roles.cache.has(config.ROLES.COMPETITION)) continue;
-      options.push({
-        label: COMP.DROPDOWN_LABEL.slice(0, 100),
-        description: 'Submit your competition entry',
-        value: c.value,
-      });
-    } else {
-      if (!perms.canAccessCampaign(member, c)) continue;
-      options.push({
-        label: c.label.slice(0, 100),
-        description: `$${(c.rpm || 0).toFixed(2)} per 1K views`,
-        value: c.value,
-      });
+function buildPanelMessage() {
+  const embed = new EmbedBuilder()
+    .setColor(0x2b2d31)
+    .setTitle(copy.submit.panelTitle)
+    .setDescription(copy.submit.panelIntro())
+    .addFields(
+      { name: `📤 ${copy.submit.btnSubmit}`, value: copy.submit.fieldSubmit, inline: true },
+      { name: `📊 ${copy.submit.btnMine}`, value: copy.submit.fieldMine, inline: true },
+      { name: `🏆 ${copy.submit.btnBoard}`, value: copy.submit.fieldBoard, inline: true },
+      { name: `📈 ${copy.submit.btnStatus}`, value: copy.submit.fieldStatus, inline: true },
+    );
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('submit_clip')
+      .setLabel(copy.submit.btnSubmit).setEmoji('📤').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('view_submissions')
+      .setLabel(copy.submit.btnMine).setEmoji('📊').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('leaderboard_button')
+      .setLabel(copy.submit.btnBoard).setEmoji('🏆').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('campaign_status')
+      .setLabel(copy.submit.btnStatus).setEmoji('📈').setStyle(ButtonStyle.Secondary),
+  );
+
+  return { embeds: [embed], components: [row] };
+}
+
+async function ensurePanel(client) {
+  try {
+    const channelId = ids.channelId('SUBMIT');
+    if (!channelId) return;
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel) return;
+
+    const saved = await getMeta('submitPanelMessageId');
+    if (saved) {
+      const msg = await channel.messages.fetch(saved).catch(() => null);
+      if (msg) { await msg.edit(buildPanelMessage()); return; }
     }
+    const msg = await channel.send(buildPanelMessage());
+    await msg.pin().catch(() => {});
+    await setMeta('submitPanelMessageId', msg.id);
+    console.log('[Panel] Submit panel posted');
+  } catch (err) {
+    console.error('[Panel] ensurePanel:', err.message);
   }
+}
 
-  if (!options.length) return null;
+// ── Shared: what can this member submit to? ─────────────────────────────────
 
+/**
+ * The single source of truth for "which campaigns can this member see".
+ * Used by the submit picker, the leaderboard picker and campaign status, so
+ * they can never disagree with each other.
+ */
+async function accessibleCampaigns(member) {
+  const list = await campaigns.listCampaigns({ status: 'active' });
+  return list.filter(c => c.type === 'competition'
+    ? member.roles.cache.has(config.ROLES.COMPETITION)
+    : perms.canAccessCampaign(member, c));
+}
+
+function optionFor(c) {
+  return c.type === 'competition'
+    ? { label: COMP.DROPDOWN_LABEL.slice(0, 100), value: c.value,
+        description: 'Competition entry' }
+    : { label: c.label.slice(0, 100), value: c.value,
+        description: `$${(c.rpm || 0).toFixed(2)} per 1,000 views` };
+}
+
+function pickerRow(customId, list, placeholder) {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
-      .setCustomId('comp:pick')
-      .setPlaceholder('Choose what to submit to…')
-      .addOptions(options.slice(0, 25))
+      .setCustomId(customId)
+      .setPlaceholder(placeholder)
+      .addOptions(list.slice(0, 25).map(optionFor))
   );
 }
 
@@ -66,19 +117,36 @@ async function handleSubmitButton(interaction) {
   if (!await perms.enforceCooldown(interaction, 'panelsubmit', 3000)) return;
   if (!await perms.requireOnboarded(interaction)) return;
 
-  const row = await buildPicker(interaction.member);
-  if (!row) {
-    return perms.safeReply(interaction,
-      'Nothing is open for you to submit to right now.\n\n' +
-      `If you're entering the competition, join it first in ` +
-      `<#${config.CHANNELS.COMP_ANNOUNCE_PUBLIC}>.`);
-  }
+  const list = await accessibleCampaigns(interaction.member);
+  if (!list.length) return perms.safeReply(interaction, copy.submit.nothingOpen());
 
   return interaction.reply({
-    content: '**What are you submitting to?**',
-    components: [row],
+    content: copy.submit.pickerPrompt,
+    components: [pickerRow('submit:pick', list, copy.submit.pickerPlaceholder)],
     flags: MessageFlags.Ephemeral,
   });
+}
+
+/** Campaign chosen. Open the link modal, reusing the campaigns.js modal ID. */
+async function handlePick(interaction) {
+  const value = interaction.values[0];
+  const campaign = await campaigns.getCampaign(value);
+  if (!campaign) return perms.safeReply(interaction, copy.campaign.notFound);
+  if (!campaigns.isLive(campaign)) return perms.safeReply(interaction, copy.campaign.closed);
+
+  const modal = new ModalBuilder()
+    .setCustomId(`camp:submitmodal:${value}`)
+    .setTitle(copy.submit.modalTitle.slice(0, 45))
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('link').setLabel(copy.submit.modalLink)
+          .setPlaceholder(copy.submit.modalLinkPlaceholder)
+          .setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('name').setLabel(copy.submit.modalName)
+          .setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(80)),
+    );
+  await interaction.showModal(modal);
 }
 
 // ── My Submissions ──────────────────────────────────────────────────────────
@@ -89,26 +157,41 @@ async function handleMySubmissions(interaction) {
 
   const subs = await getDb().collection('submissions')
     .find({ userId: interaction.user.id }).sort({ submittedAt: -1 }).limit(25).toArray();
-  if (!subs.length) return interaction.editReply('📭 No submissions yet.');
+  if (!subs.length) return interaction.editReply(copy.submit.noSubmissions());
 
   const icon = { approved: '✅', pending: '⏳', rejected: '❌', flagged: '⚠️' };
   const approved = subs.filter(s => s.status === 'approved');
   const totals = approved.reduce(
     (a, s) => ({ v: a.v + (s.views || 0), e: a.e + (s.earnings || 0) }), { v: 0, e: 0 });
 
+  // "Last updated at" comes from the newest lastUpdated across their approved
+  // submissions, which is the number they are actually asking about.
+  const newest = approved
+    .map(s => s.lastUpdated && new Date(s.lastUpdated).getTime())
+    .filter(Boolean)
+    .sort((a, b) => b - a)[0];
+  const when = newest ? `<t:${Math.floor(newest / 1000)}:R>` : null;
+
   const embed = new EmbedBuilder()
     .setColor(config.BRAND_COLOR)
-    .setTitle('Your submissions')
+    .setTitle(copy.submit.mineTitle)
     .setDescription(subs.slice(0, 15).map(s =>
-      `${icon[s.status] || '•'} [${s.clipName}](${s.link}) — ` +
+      `${icon[s.status] || '•'} [${s.clipName}](${s.link}) ` +
       `${(s.views || 0).toLocaleString('en-US')} views` +
       (s.earnings ? ` · **$${s.earnings.toFixed(2)}**` : '')
     ).join('\n'))
     .addFields(
-      { name: 'Total views', value: totals.v.toLocaleString('en-US'), inline: true },
-      { name: 'Total earned', value: `$${totals.e.toFixed(2)}`, inline: true },
-    )
-    .setFooter({ text: 'Views refresh every 12 hours' });
+      { name: copy.submit.mineTotalViews, value: totals.v.toLocaleString('en-US'), inline: true },
+      { name: copy.submit.mineTotalEarned, value: `$${totals.e.toFixed(2)}`, inline: true },
+    );
+
+  // Footer cannot render a Discord timestamp, so the relative time goes in the
+  // description instead when we have one.
+  if (when) {
+    embed.setDescription(`${embed.data.description}\n\n${copy.submit.mineFooter(when)}`);
+  } else {
+    embed.setFooter({ text: copy.submit.mineFooter(null) });
+  }
 
   return interaction.editReply({ embeds: [embed] });
 }
@@ -119,29 +202,18 @@ async function handleLeaderboard(interaction) {
   if (!await perms.requireOnboarded(interaction)) return;
   await perms.safeDefer(interaction, true);
 
-  const list = (await campaigns.listCampaigns({ status: 'active' }))
-    .filter(c => c.type === 'competition'
-      ? interaction.member.roles.cache.has(config.ROLES.COMPETITION)
-      : perms.canAccessCampaign(interaction.member, c));
+  const list = await accessibleCampaigns(interaction.member);
+  if (!list.length) return interaction.editReply(copy.campaign.statusNone());
 
-  if (!list.length) return interaction.editReply('No campaigns to show yet.');
-
-  // Only one thing open — skip the picker.
   if (list.length === 1) {
     const embed = await campaigns.buildLeaderboardEmbed(list[0].value, interaction.user.id);
     return interaction.editReply({ embeds: [embed] });
   }
 
-  const row = new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId('panel:board')
-      .setPlaceholder('Pick a campaign…')
-      .addOptions(list.slice(0, 25).map(c => ({
-        label: (c.type === 'competition' ? COMP.DROPDOWN_LABEL : c.label).slice(0, 100),
-        value: c.value,
-      })))
-  );
-  return interaction.editReply({ content: '**Which leaderboard?**', components: [row] });
+  return interaction.editReply({
+    content: copy.leaderboard.pickPrompt,
+    components: [pickerRow('panel:board', list, copy.leaderboard.pickPlaceholder)],
+  });
 }
 
 async function handleBoardPick(interaction) {
@@ -156,12 +228,8 @@ async function handleStatus(interaction) {
   if (!await perms.requireOnboarded(interaction)) return;
   await perms.safeDefer(interaction, true);
 
-  const list = (await campaigns.listCampaigns({ status: 'active' }))
-    .filter(c => c.type === 'competition'
-      ? interaction.member.roles.cache.has(config.ROLES.COMPETITION)
-      : perms.canAccessCampaign(interaction.member, c));
-
-  if (!list.length) return interaction.editReply('No active campaigns right now.');
+  const list = await accessibleCampaigns(interaction.member);
+  if (!list.length) return interaction.editReply(copy.campaign.statusNone());
 
   const lines = [];
   for (const c of list) {
@@ -171,83 +239,67 @@ async function handleStatus(interaction) {
       lines.push(
         `🏆 **${c.label}**\n` +
         `　${COMP.PRIZE_SUMMARY}\n` +
-        `　Ends <t:${ends}:R>`);
+        `　Closes <t:${ends}:R>`);
       continue;
     }
 
     const b = await campaigns.budgetStatus(c);
     lines.push(
       `${c.tier === 'core' ? '⭐' : '🔓'} **${c.label}**\n` +
-      `　$${c.rpm.toFixed(2)}/1K · cap $${c.maxPayout} · ` +
-      `${Math.round(100 - b.percentUsed)}% budget left\n` +
-      `　Ends <t:${ends}:R>`);
+      `　$${c.rpm.toFixed(2)} per 1,000 views, max $${c.maxPayout} per video\n` +
+      `　$${b.remaining.toFixed(2)} left of $${(c.budget || 0).toFixed(2)}\n` +
+      `　Closes <t:${ends}:R>`);
   }
 
   return interaction.editReply({
     embeds: [new EmbedBuilder()
       .setColor(config.BRAND_COLOR)
-      .setTitle('📈 Active campaigns')
-      .setDescription(lines.join('\n\n'))],
+      .setTitle(copy.campaign.statusTitle)
+      .setDescription(lines.join('\n\n').slice(0, 4000))],
   });
 }
 
 // ── Router ──────────────────────────────────────────────────────────────────
 
+const KNOWN = new Set([
+  'submit_clip', 'view_submissions', 'leaderboard_button', 'campaign_status',
+  'submit:pick', 'panel:board',
+]);
+
 async function route(interaction) {
   const id = interaction.customId;
-  const known = ['submit_clip', 'view_submissions', 'leaderboard_button', 'campaign_status'];
-  if (!known.includes(id) && id !== 'panel:board') return false;
+  if (!KNOWN.has(id)) return false;
 
   try {
     if (id === 'submit_clip') await handleSubmitButton(interaction);
     else if (id === 'view_submissions') await handleMySubmissions(interaction);
     else if (id === 'leaderboard_button') await handleLeaderboard(interaction);
     else if (id === 'campaign_status') await handleStatus(interaction);
+    else if (id === 'submit:pick') await handlePick(interaction);
     else if (id === 'panel:board') await handleBoardPick(interaction);
   } catch (err) {
     console.error('[Panel] route:', err);
-    await perms.safeReply(interaction, '❌ Something went wrong. Try again.');
+    await perms.safeReply(interaction, copy.common.errIn('submissions'));
   }
   return true;
 }
 
-// ── /submitpanel — re-post the panel ────────────────────────────────────────
-
-function buildPanelMessage() {
-  const embed = new EmbedBuilder()
-    .setColor(0x2b2d31)
-    .setTitle('🎬 Manage Your Submissions')
-    .setDescription('Use the buttons below to manage your edits.\n\u200b')
-    .addFields(
-      { name: '📤 Submit Edit', value: 'Submit a TikTok edit to a campaign.', inline: true },
-      { name: '📊 My Submissions', value: 'View your edits, views and earnings.', inline: true },
-      { name: '\u200b', value: '\u200b', inline: true },
-      { name: '🏆 Leaderboard', value: 'See who has the most views per campaign.', inline: true },
-      { name: '📈 Campaign Status', value: 'View active campaigns, budgets and deadlines.', inline: true },
-      { name: '\u200b', value: '\u200b', inline: true },
-    );
-
-  const { ButtonBuilder, ButtonStyle } = require('discord.js');
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('submit_clip').setLabel('📤 Submit Edit').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('view_submissions').setLabel('📊 My Submissions').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('leaderboard_button').setLabel('🏆 Leaderboard').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('campaign_status').setLabel('📈 Campaign Status').setStyle(ButtonStyle.Secondary),
-  );
-
-  return { embeds: [embed], components: [row] };
-}
+// ── /submitpanel ────────────────────────────────────────────────────────────
 
 async function command(interaction) {
   if (!await perms.requireStaff(interaction)) return;
   await perms.safeDefer(interaction, true);
   try {
     await interaction.channel.send(buildPanelMessage());
-    return interaction.editReply('✅ Panel sent.');
+    return interaction.editReply('Panel posted.');
   } catch (err) {
     console.error('[Panel] send:', err.message);
-    return interaction.editReply('❌ Couldn\'t send it — check the bot can post here.');
+    return interaction.editReply(
+      'Could not post here. The bot needs Send Messages and Embed Links in this channel.');
   }
 }
 
-module.exports = { route, buildPicker, command, buildPanelMessage };
+module.exports = {
+  route, command, buildPanelMessage, ensurePanel,
+  accessibleCampaigns, handleMySubmissions, handleStatus,
+};

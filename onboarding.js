@@ -2,52 +2,41 @@
 
 const {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder,
-  ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags,
+  StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
+  MessageFlags,
 } = require('discord.js');
 
 const config = require('./config');
+const copy = require('./copy');
+const ids = require('./ids');
 const { getDb, getMeta, setMeta } = require('./db');
 const tiktok = require('./tiktok');
 const perms = require('./permissions');
+const logging = require('./logging');
 
 /**
  * ============================================================================
- *  ONBOARDING
+ *  ONBOARDING — 3 obligatory steps
  * ============================================================================
- *  What changed and why:
+ *    1. TikTok profile link
+ *    2. Niches (multi-select: Film & TV, Celebs, Sports)
+ *    3. Payment method (PayPal address, or bank transfer collected at payout)
  *
- *  1. ONE STATIC PANEL. Your bot currently posts a fresh welcome message on
- *     every guildMemberAdd. Two problems at scale: the channel becomes an
- *     unreadable wall, and Discord rate-limits a channel to roughly 5 messages
- *     per 5 seconds — so during a TikTok traffic spike most of those sends fail
- *     and those members get no onboarding prompt at all. They then sit in a
- *     server where they can see nothing, and leave.
+ *  Design notes that still hold from the previous build:
  *
- *     Now: one message, posted once, pinned, re-used forever. Its ID lives in
- *     Mongo so redeploys don't duplicate it.
+ *  ONE STATIC PANEL, not a message per join. Discord rate-limits a channel to
+ *  roughly 5 messages per 5 seconds, so during a TikTok traffic spike most
+ *  per-join sends fail and those members get no prompt at all.
  *
- *  2. STATE IN MONGO, NOT MEMORY. `onboardingState` was a plain object. Railway
- *     redeploys on every git push. Anyone mid-flow lost their progress with no
- *     recovery path. Now it's a TTL collection — survives restarts, self-cleans
- *     after an hour.
+ *  STATE IN MONGO, NOT MEMORY. Railway redeploys on every push. In-memory state
+ *  strands anyone mid-flow with no recovery. The TTL index cleans it up after
+ *  an hour.
  *
- *  3. HANDLE CAPTURED PROPERLY. We store the bare @handle, not the raw URL, so
- *     ownership verification at submission time actually works.
- *
- *  4. GENRE CAPTURED. This is the one thing the PayPerClip pitch deck had that
- *     you don't, and it's squarely your differentiator — you sell genre-matched
- *     editors. Capturing it at onboarding means that when a client sends a
- *     drill track you can filter to drill editors in one query instead of
- *     asking in Discord and waiting.
+ *  What is new: niches are granted as real roles, because they are the ping
+ *  targets for campaigns. Picking "Sports" is what puts a sports campaign in
+ *  front of you, so the selector is not a survey question, it is routing.
  * ============================================================================
  */
-
-const GENRES = [
-  'Hip Hop / Rap', 'Phonk', 'R&B / Soul', 'Pop', 'Drill',
-  'Electronic / Hyperpop', 'Latin / Reggaeton', 'Rock / Alt', 'Instrumental / Ambient',
-];
-
-const STYLES = ['Lyrical', 'Thirst-Trap', 'Anime', 'Film/TV', 'Sports', 'Gaming', 'Velocity'];
 
 // ── State (Mongo-backed) ────────────────────────────────────────────────────
 
@@ -74,26 +63,27 @@ async function clearState(userId) {
 // ── The static panel ────────────────────────────────────────────────────────
 
 function buildPanel() {
-const content = '👋 Welcome! Please complete the onboarding below to get access to the server.';
-
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('onboard:start')
-      .setLabel('Get Started')
+      .setLabel(copy.onboarding.startButton)
       .setEmoji('🚀')
       .setStyle(ButtonStyle.Primary)
   );
 
-  return { content, embeds: [], components: [row] };
+  return { content: copy.onboarding.panel(), embeds: [], components: [row] };
 }
 
 /**
  * Ensure exactly one panel exists in #onboarding. Called on every boot.
- * Idempotent: it edits the existing message rather than posting a new one.
+ * Idempotent: edits the existing message rather than posting a new one.
  */
 async function ensurePanel(client) {
   try {
-    const channel = await client.channels.fetch(config.CHANNELS.ONBOARDING);
+    const channelId = ids.channelId('ONBOARDING');
+    if (!channelId) return console.error('[Onboarding] No onboarding channel configured');
+
+    const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel) return console.error('[Onboarding] Channel not found');
 
     const savedId = await getMeta('onboardPanelMessageId');
@@ -115,24 +105,23 @@ async function ensurePanel(client) {
   }
 }
 
-// ── Flow ────────────────────────────────────────────────────────────────────
+// ── Step 1: TikTok ──────────────────────────────────────────────────────────
 
 async function handleStart(interaction) {
   if (perms.tierAtLeast(interaction.member, config.TIERS.NETWORK)) {
-    return perms.safeReply(interaction,
-      `✅ You're already set up. Head to <#${config.CHANNELS.ACTIVE_CAMPAIGNS}>.`);
+    return perms.safeReply(interaction, copy.onboarding.alreadyDone());
   }
   if (!await perms.enforceCooldown(interaction, 'onboard', 3000)) return;
 
   const modal = new ModalBuilder()
     .setCustomId('onboard:tiktok')
-    .setTitle('Step 1 of 3 — Your TikTok')
+    .setTitle(copy.onboarding.step1Title)
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId('handle')
-          .setLabel('Link to your TikTok profile')
-          .setPlaceholder('https://www.tiktok.com/@yourhandle')
+          .setLabel(copy.onboarding.step1Label)
+          .setPlaceholder(copy.onboarding.step1Placeholder)
           .setStyle(TextInputStyle.Short)
           .setMaxLength(120)
           .setRequired(true)
@@ -145,10 +134,7 @@ async function handleTikTokModal(interaction) {
   const raw = interaction.fields.getTextInputValue('handle');
   const handle = tiktok.parseHandle(raw);
 
-  if (!handle) {
-    return perms.safeReply(interaction,
-      '❌ That doesn\'t look like a TikTok handle. Try `@yourhandle` or your full profile link.');
-  }
+  if (!handle) return perms.safeReply(interaction, copy.onboarding.errBadHandle);
 
   // One TikTok account = one Discord account. Without this, one person opens
   // five Discord accounts, submits the same content, and collects five payouts.
@@ -158,12 +144,41 @@ async function handleTikTokModal(interaction) {
   });
   if (clash) {
     console.warn(`[Onboarding] Duplicate handle @${handle} attempted by ${interaction.user.tag}`);
-    return perms.safeReply(interaction,
-      '❌ That TikTok account is already registered to another member. '
-      + 'If this is your account, open a ticket and we\'ll sort it.');
+    return perms.safeReply(interaction, copy.onboarding.errDuplicateHandle(handle));
   }
 
   await setState(interaction.user.id, { tiktokHandle: handle });
+
+  return interaction.reply({
+    content: copy.onboarding.step2().replace('%HANDLE%', handle),
+    components: [buildNicheRow()],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+// ── Step 2: niches ──────────────────────────────────────────────────────────
+
+function buildNicheRow() {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('onboard:niches')
+      .setPlaceholder(copy.onboarding.step2Placeholder)
+      .setMinValues(1)
+      .setMaxValues(config.NICHES.length)
+      .addOptions(config.NICHES.map(n => ({
+        label: n.label,
+        value: n.value,
+        emoji: n.emoji,
+      })))
+  );
+}
+
+async function handleNicheSelect(interaction) {
+  const chosen = interaction.values || [];
+  if (!chosen.length) return perms.safeReply(interaction, copy.onboarding.errNoNiche);
+
+  await setState(interaction.user.id, { niches: chosen });
+  const labels = chosen.map(v => ids.nicheByValue(v)?.label || v);
 
   const payRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('onboard:pay:paypal')
@@ -172,51 +187,40 @@ async function handleTikTokModal(interaction) {
       .setLabel('Bank Transfer').setStyle(ButtonStyle.Secondary),
   );
 
-  await interaction.reply({
-    content: `✅ Linked **@${handle}**\n\n**Step 2 of 2** — how do you want to get paid?`,
+  return interaction.update({
+    content: copy.onboarding.step3(labels),
     components: [payRow],
-    flags: MessageFlags.Ephemeral,
   });
 }
 
-
+// ── Step 3: payment ─────────────────────────────────────────────────────────
 
 async function handlePaymentChoice(interaction, method) {
   if (method === 'paypal') {
     const modal = new ModalBuilder()
       .setCustomId('onboard:paypal')
-      .setTitle('PayPal Details')
+      .setTitle(copy.onboarding.paypalModalTitle)
       .addComponents(new ActionRowBuilder().addComponents(
         new TextInputBuilder()
-          .setCustomId('email').setLabel('PayPal email address')
+          .setCustomId('email').setLabel(copy.onboarding.paypalLabel)
           .setStyle(TextInputStyle.Short).setRequired(true)
       ));
     return interaction.showModal(modal);
   }
 
-  if (method === 'crypto') {
-    const modal = new ModalBuilder()
-      .setCustomId('onboard:crypto')
-      .setTitle('Crypto Details')
-      .addComponents(new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId('wallet').setLabel('Wallet address + network')
-          .setPlaceholder('0x… (ERC-20) or T… (TRC-20)')
-          .setStyle(TextInputStyle.Short).setRequired(true)
-      ));
-    return interaction.showModal(modal);
-  }
-
-  // Bank details are collected in a ticket, not a public modal.
+  // Bank details are collected by ticket at payout time, so there is nothing to
+  // ask for here. Saying so is the whole point, otherwise it looks broken.
   await setState(interaction.user.id, { paymentMethod: 'bank' });
+  await interaction.update({ content: copy.onboarding.bankChosen(), components: [] })
+    .catch(() => {});
   await complete(interaction);
 }
 
-async function handlePaymentModal(interaction, method) {
-  const patch = method === 'paypal'
-    ? { paymentMethod: 'paypal', paypalEmail: interaction.fields.getTextInputValue('email').trim() }
-    : { paymentMethod: 'crypto', cryptoWallet: interaction.fields.getTextInputValue('wallet').trim() };
-  await setState(interaction.user.id, patch);
+async function handlePaymentModal(interaction) {
+  await setState(interaction.user.id, {
+    paymentMethod: 'paypal',
+    paypalEmail: interaction.fields.getTextInputValue('email').trim(),
+  });
   await complete(interaction);
 }
 
@@ -226,18 +230,29 @@ async function complete(interaction) {
   const userId = interaction.user.id;
   const state = (await getState(userId)) || {};
 
-  if (!state.tiktokHandle) {
-    return perms.safeReply(interaction,
-      '❌ Your session expired. Tap **Get Started** again — it only takes 30 seconds.');
+  if (!state.tiktokHandle || !state.niches?.length) {
+    return perms.safeReply(interaction, copy.onboarding.errExpired);
   }
 
-  // 1. Grant Network.
+  const nicheLabels = state.niches.map(v => ids.nicheByValue(v)?.label || v);
+
+  // 1. Roles: Network, plus one per niche. Niche roles are the ping targets, so
+  //    a failure here means the member silently stops hearing about campaigns.
   try {
-    await interaction.member.roles.add(config.ROLES.NETWORK, 'Completed onboarding');
+    const networkRole = ids.roleId('NETWORK');
+    if (networkRole) {
+      await interaction.member.roles.add(networkRole, 'Completed onboarding');
+    }
   } catch (err) {
-    console.error('[Onboarding] Role grant failed:', err.message);
-    return perms.safeReply(interaction,
-      '❌ Couldn\'t assign your role. Ping a staff member — this is on our end, not yours.');
+    console.error('[Onboarding] Network role grant failed:', err.message);
+    return perms.safeReply(interaction, copy.onboarding.errRoleFailed());
+  }
+
+  for (const value of state.niches) {
+    const roleId = ids.nicheRoleId(value);
+    if (!roleId) continue;
+    await interaction.member.roles.add(roleId, 'Niche selected at onboarding')
+      .catch(err => console.error(`[Onboarding] Niche role ${value}:`, err.message));
   }
 
   // 2. Persist the editor profile.
@@ -250,12 +265,11 @@ async function complete(interaction) {
         displayName: interaction.user.globalName || interaction.user.username,
         tiktokHandle: state.tiktokHandle,
         tiktokUrl: `https://www.tiktok.com/@${state.tiktokHandle}`,
-        genres: state.genres || [],
-        styles: state.styles || [],
+        niches: state.niches,
         paymentMethod: state.paymentMethod || null,
         paypalEmail: state.paypalEmail || null,
-        cryptoWallet: state.cryptoWallet || null,
         tier: config.TIERS.NETWORK,
+        onboardedAt: new Date(),
         updatedAt: new Date(),
       },
       $setOnInsert: {
@@ -271,29 +285,14 @@ async function complete(interaction) {
 
   await clearState(userId);
 
-  // 3. Log it (unchanged behaviour — this already worked).
-  try {
-    const logs = await interaction.client.channels.fetch(config.CHANNELS.LOGS);
-    const embed = new EmbedBuilder()
-      .setColor(0x57f287)
-      .setTitle('New Network Editor')
-      .setDescription(`<@${userId}> completed onboarding`)
-      .addFields(
-        { name: 'TikTok', value: `[@${state.tiktokHandle}](https://www.tiktok.com/@${state.tiktokHandle})`, inline: true },
-        { name: 'Payment', value: state.paymentMethod || 'Not set', inline: true },
-      )
-      .setThumbnail(interaction.user.displayAvatarURL())
-      .setTimestamp();
-    await logs.send({ embeds: [embed] });
-  } catch (err) {
-    console.error('[Onboarding] Log failed:', err.message);
-  }
+  logging.onboarded(interaction.user, {
+    tiktokHandle: state.tiktokHandle,
+    nicheLabels,
+    paymentMethod: state.paymentMethod,
+  });
 
-  // 4. Welcome.
   const payload = {
-    content:
-      `✅ **You're all set! Welcome to Editable Group.**\n\n` +
-      `Have a look around the server, and say hello in <#1536395106024685651>.`,
+    content: copy.onboarding.complete(nicheLabels),
     components: [],
     flags: MessageFlags.Ephemeral,
   };
@@ -314,14 +313,15 @@ async function route(interaction) {
   try {
     if (id === 'onboard:start') await handleStart(interaction);
     else if (id === 'onboard:tiktok') await handleTikTokModal(interaction);
-    else if (id === 'onboard:paypal') await handlePaymentModal(interaction, 'paypal');
+    else if (id === 'onboard:niches') await handleNicheSelect(interaction);
+    else if (id === 'onboard:paypal') await handlePaymentModal(interaction);
     else if (id.startsWith('onboard:pay:')) await handlePaymentChoice(interaction, id.split(':')[2]);
     else return false;
   } catch (err) {
     console.error('[Onboarding] route error:', err);
-    await perms.safeReply(interaction, '❌ Something went wrong. Try again in a moment.');
+    await perms.safeReply(interaction, copy.common.errIn('onboarding'));
   }
   return true;
 }
 
-module.exports = { ensurePanel, route, buildPanel, GENRES, STYLES };
+module.exports = { ensurePanel, route, buildPanel, complete };
