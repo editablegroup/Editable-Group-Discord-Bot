@@ -117,16 +117,48 @@ async function ensureNicheRoles(guild) {
  * `network` means Network editors can see it, `staff` means staff only.
  */
 const STANDING_CHANNELS = [
-  { key: 'PAYMENTS',    name: 'payments',       audience: 'network' },
-  { key: 'TICKETS',     name: 'open-a-ticket',  audience: 'network' },
-  { key: 'LEADERBOARD', name: 'leaderboard',    audience: 'network' },
-  { key: 'LOG:SYSTEM',      name: 'system',           audience: 'staff' },
-  { key: 'LOG:JOIN_LEAVE',  name: 'join-leave',       audience: 'staff' },
-  { key: 'LOG:CHAT',        name: 'chat-logs',        audience: 'staff' },
-  { key: 'LOG:SERVER',      name: 'server-logs',      audience: 'staff' },
-  { key: 'LOG:ONBOARDING',  name: 'onboarding-logs',  audience: 'staff' },
-  { key: 'LOG:SUBMISSION',  name: 'submission-logs',  audience: 'staff' },
+  { key: 'PAYMENTS',    name: 'payments',       audience: 'network',
+    aliases: ['your-payouts', 'payouts', 'payment'] },
+  { key: 'TICKETS',     name: 'open-a-ticket',  audience: 'network',
+    aliases: ['tickets', 'ticket', 'support'] },
+  { key: 'LEADERBOARD', name: 'leaderboard',    audience: 'network',
+    aliases: ['leaderboards', 'top-editors'] },
+  { key: 'LOG:SYSTEM',      name: 'system',           audience: 'staff',
+    aliases: ['system-logs', 'bot-logs'] },
+  { key: 'LOG:JOIN_LEAVE',  name: 'join-leave',       audience: 'staff',
+    aliases: ['joins-leaves', 'join-logs', 'member-logs'] },
+  { key: 'LOG:CHAT',        name: 'chat-logs',        audience: 'staff',
+    aliases: ['message-logs', 'chatlog'] },
+  { key: 'LOG:SERVER',      name: 'server-logs',      audience: 'staff',
+    aliases: ['serverlog', 'audit-logs'] },
+  { key: 'LOG:ONBOARDING',  name: 'onboarding-logs',  audience: 'staff',
+    aliases: ['onboard-logs'] },
+  { key: 'LOG:SUBMISSION',  name: 'submission-logs',  audience: 'staff',
+    aliases: ['submissions-logs', 'submit-logs'] },
 ];
+
+/**
+ * Compare channel names the way a human reads them.
+ *
+ * Discord channel names are routinely decorated: "🏆・leaderboard",
+ * "📧 • open-a-ticket", "🔒-system". An exact string match against "leaderboard"
+ * fails on every one of those, and the first version of this function did
+ * exactly that, so /setup created a duplicate of every channel that already
+ * existed. Stripping everything that is not a letter or digit fixes it:
+ * "🏆・leaderboard" and "leaderboard" both reduce to "leaderboard".
+ */
+function normalizeName(name) {
+  return String(name).toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** Find an existing text channel matching a spec's name or any of its aliases. */
+function findExisting(guild, spec) {
+  const wanted = new Set(
+    [spec.name, ...(spec.aliases || [])].map(normalizeName));
+
+  return guild.channels.cache.find(c =>
+    c.type === ChannelType.GuildText && wanted.has(normalizeName(c.name))) || null;
+}
 
 function overwritesFor(guild, audience) {
   const everyone = guild.roles.everyone.id;
@@ -157,11 +189,13 @@ async function ensureStandingChannels(guild) {
   for (const spec of STANDING_CHANNELS) {
     if (ids.channelId(spec.key)) continue;
 
-    const existing = guild.channels.cache.find(
-      c => c.name === spec.name && c.type === ChannelType.GuildText);
+    // Adopt an existing channel wherever one matches. Its permissions are left
+    // exactly as they are: you set that channel up deliberately, and /setup
+    // overwriting your overwrites would be worse than not adopting it at all.
+    const existing = findExisting(guild, spec);
     if (existing) {
       await ids.remember(`CHANNEL:${spec.key}`, existing.id);
-      reused.push(`#${spec.name}`);
+      reused.push(`#${existing.name}`);
       continue;
     }
 
@@ -349,7 +383,8 @@ async function sweepExpiredRoles(client) {
 }
 
 module.exports = {
-  slug, checkCapability, ensureNicheRoles, ensureStandingChannels,
+  slug, normalizeName, findExisting,
+  checkCapability, ensureNicheRoles, ensureStandingChannels,
   createCampaignSpace, retireCampaignSpace, sweepExpiredRoles,
   STANDING_CHANNELS,
 };

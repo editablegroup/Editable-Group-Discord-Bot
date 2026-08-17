@@ -15,7 +15,7 @@ const perms = require('./permissions');
  * ============================================================================
  *  PAYMENTS PANEL (#payments)
  * ============================================================================
- *  Two buttons: Manage Payment Methods, and Check Balance.
+ *  One button: Manage Payment Methods.
  *
  *  The gap this closes: onboarding took a PayPal address once and there was no
  *  way to change it afterwards. Someone whose PayPal is wrong had no route to
@@ -32,15 +32,12 @@ function buildPanelMessage() {
     .setTitle(copy.payments.panelTitle)
     .setDescription(copy.payments.panelIntro())
     .addFields(
-      { name: `💳 ${copy.payments.btnManage}`, value: copy.payments.fieldManage, inline: true },
-      { name: `💰 ${copy.payments.btnBalance}`, value: copy.payments.fieldBalance, inline: true },
+      { name: `💳 ${copy.payments.btnManage}`, value: copy.payments.fieldManage, inline: false },
     );
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('pay:manage')
       .setLabel(copy.payments.btnManage).setEmoji('💳').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('pay:balance')
-      .setLabel(copy.payments.btnBalance).setEmoji('💰').setStyle(ButtonStyle.Secondary),
   );
 
   return { embeds: [embed], components: [row] };
@@ -127,83 +124,13 @@ async function handlePaypalModal(interaction) {
   return perms.safeReply(interaction, copy.payments.manageChanged('paypal', email));
 }
 
-// ── Balance ─────────────────────────────────────────────────────────────────
-
-async function balance(interaction) {
-  if (!await perms.requireOnboarded(interaction)) return;
-  await perms.safeDefer(interaction, true);
-
-  const rows = await getDb().collection('earnings')
-    .find({ userId: interaction.user.id }).toArray();
-  const sum = state => rows.filter(r => r.state === state).reduce((n, r) => n + (r.amount || 0), 0);
-  const pending = sum('pending');
-  const cleared = sum('cleared');
-  const paid = sum('paid');
-
-  const embed = new EmbedBuilder()
-    .setColor(config.BRAND_COLOR)
-    .setTitle(copy.payments.balanceTitle)
-    .addFields(
-      { name: copy.payments.balAvailable, value: `$${cleared.toFixed(2)}`, inline: true },
-      { name: copy.payments.balPending, value: `$${pending.toFixed(2)}`, inline: true },
-      { name: copy.payments.balPaid, value: `$${paid.toFixed(2)}`, inline: true },
-    )
-    .setFooter({ text: copy.payments.balanceFooter() });
-
-  const canRequest = cleared >= config.PAYOUTS.MINIMUM_USD;
-  if (!canRequest) {
-    embed.setDescription(copy.payments.balanceShortfall(config.PAYOUTS.MINIMUM_USD - cleared));
-  }
-
-  const components = canRequest
-    ? [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('pay:payout')
-          .setLabel(copy.payments.btnPayout).setEmoji('💸').setStyle(ButtonStyle.Success))]
-    : [];
-
-  return interaction.editReply({ embeds: [embed], components });
-}
-
-// ── Payout request ──────────────────────────────────────────────────────────
-
-async function requestPayout(interaction) {
-  if (!await perms.requireOnboarded(interaction)) return;
-  await perms.safeDefer(interaction, true);
-
-  const db = getDb();
-  const open = await db.collection('payoutRequests')
-    .findOne({ userId: interaction.user.id, status: 'pending' });
-  if (open) return interaction.editReply(copy.payments.payoutOpen);
-
-  const rows = await db.collection('earnings')
-    .find({ userId: interaction.user.id, state: 'cleared' }).toArray();
-  const cleared = rows.reduce((n, r) => n + (r.amount || 0), 0);
-  if (cleared < config.PAYOUTS.MINIMUM_USD) {
-    return interaction.editReply(copy.payments.payoutTooSmall(cleared));
-  }
-
-  const editor = await db.collection('editors').findOne({ userId: interaction.user.id });
-  if (!editor?.paymentMethod) {
-    return interaction.editReply(copy.payments.payoutNoMethod());
-  }
-
-  await db.collection('payoutRequests').insertOne({
-    userId: interaction.user.id,
-    username: interaction.user.username,
-    amount: cleared,
-    method: editor.paymentMethod,
-    destination: editor.paypalEmail || 'bank transfer, details to collect',
-    status: 'pending',
-    createdAt: new Date(),
-  });
-
-  const campaigns = require('./campaigns');
-  await campaigns.alert(interaction.client,
-    `💸 **Payout request** from <@${interaction.user.id}> for **$${cleared.toFixed(2)}** ` +
-    `via ${editor.paymentMethod}${editor.paypalEmail ? ` (${editor.paypalEmail})` : ''}.`);
-
-  return interaction.editReply(copy.payments.payoutRequested(cleared));
-}
+// ── Balance and payout requests: removed ────────────────────────────────────
+//
+// Check Balance, /balance and Request Payout were removed on request. The
+// earnings ledger still records every approved submission, referral bonus and
+// clearing event exactly as before, so nothing is lost and restoring the
+// interface is a matter of putting these functions back. Nobody can see or
+// request money from inside Discord in the meantime.
 
 // ── Router ──────────────────────────────────────────────────────────────────
 
@@ -213,8 +140,6 @@ async function route(interaction) {
 
   try {
     if (id === 'pay:manage') await handleManage(interaction);
-    else if (id === 'pay:balance') await balance(interaction);
-    else if (id === 'pay:payout') await requestPayout(interaction);
     else if (id === 'pay:paypalmodal') await handlePaypalModal(interaction);
     else if (id.startsWith('pay:set:')) await handleSetMethod(interaction, id.split(':')[2]);
     else return false;
@@ -225,4 +150,4 @@ async function route(interaction) {
   return true;
 }
 
-module.exports = { ensurePanel, buildPanelMessage, balance, requestPayout, route };
+module.exports = { ensurePanel, buildPanelMessage, route };

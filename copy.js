@@ -191,15 +191,13 @@ module.exports = {
   payments: {
     panelTitle: '💳 Payments',
     panelIntro: () =>
-      `Minimum payout is ${money(config.PAYOUTS.MINIMUM_USD)}. Earnings clear ` +
-      `${config.PAYOUTS.CLEARING_DAYS} days after a campaign ends, which is the window we use ` +
-      `to catch view botting before money moves.`,
+      `Payouts go to whichever method you set here, so keep it current. ` +
+      `Earnings clear ${config.PAYOUTS.CLEARING_DAYS} days after a campaign ends, which is ` +
+      `the window we use to catch view botting before money moves. Payouts go out in batches ` +
+      `after that, minimum ${money(config.PAYOUTS.MINIMUM_USD)}.`,
 
     btnManage: 'Manage Payment Methods',
-    btnBalance: 'Check Balance',
-
     fieldManage: 'Switch between PayPal and bank transfer, or change your PayPal address.',
-    fieldBalance: 'Pending, cleared, and what you have been paid.',
 
     manageTitle: 'Your payment method',
     manageCurrent: (method, destination) => {
@@ -211,27 +209,6 @@ module.exports = {
       method === 'paypal'
         ? `✅ Payouts now go to PayPal at **${destination}**.`
         : '✅ Payouts now go by bank transfer. We will ask for account details when you first cash out.',
-
-    balanceTitle: 'Your balance',
-    balAvailable: '💵 Available',
-    balPending: '⏳ Pending',
-    balPaid: '✅ Paid out',
-    balanceFooter: () =>
-      `Pending clears ${config.PAYOUTS.CLEARING_DAYS} days after a campaign ends. ` +
-      `Minimum payout ${money(config.PAYOUTS.MINIMUM_USD)}.`,
-    balanceShortfall: (short) =>
-      `${money(short)} more clears before you can request a payout.`,
-
-    btnPayout: 'Request Payout',
-    payoutOpen: 'You already have a payout request open. Staff process them in batches.',
-    payoutTooSmall: (cleared) =>
-      `Minimum payout is ${money(config.PAYOUTS.MINIMUM_USD)} and you have ${money(cleared)} cleared. ` +
-      `Pending earnings are not included until they clear.`,
-    payoutNoMethod: () =>
-      `Set a payment method first, otherwise there is nowhere to send it. ` +
-      `Use Manage Payment Methods in ${ch('PAYMENTS', 'payments')}.`,
-    payoutRequested: (amount) =>
-      `✅ Requested **${money(amount)}**. Payouts go out in batches and you get a DM when yours is sent.`,
   },
 
   // ── Campaign posts ────────────────────────────────────────────────────────

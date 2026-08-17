@@ -516,12 +516,6 @@ async function editorLookup(interaction) {
   const editor = await db.collection('editors').findOne({ userId: user.id });
   if (!editor) return interaction.editReply('No profile. They have not onboarded.');
 
-  const subs = await db.collection('submissions')
-    .find({ userId: user.id }).sort({ submittedAt: -1 }).limit(50).toArray();
-  const approved = subs.filter(s => s.status === 'approved');
-  const totalViews = approved.reduce((n, s) => n + (s.views || 0), 0);
-  const totalEarned = approved.reduce((n, s) => n + (s.earnings || 0), 0);
-
   const embed = new EmbedBuilder()
     .setColor(editor.tier === config.TIERS.CORE ? 0xf5b800 : config.BRAND_COLOR)
     .setTitle(`${editor.tier === config.TIERS.CORE ? '⭐ ' : ''}${editor.username}`)
@@ -533,26 +527,11 @@ async function editorLookup(interaction) {
       { name: 'Niches', value:
         (editor.niches || []).map(n => ids.nicheByValue(n)?.label || n).join(', ') || 'None',
         inline: false },
-      { name: 'Performance', value:
-        `${approved.length} approved of ${subs.length} submitted\n` +
-        `${totalViews.toLocaleString('en-US')} views, $${totalEarned.toFixed(2)} earned`, inline: false },
       { name: 'Payment', value:
         editor.paymentMethod === 'paypal' ? `PayPal, ${editor.paypalEmail}`
         : editor.paymentMethod === 'bank' ? 'Bank transfer, details collected at payout'
         : 'Not set', inline: false },
     );
-
-  // Balance comes from the ledger, not the submission rows, so referral bonuses
-  // and manual adjustments are included.
-  const ledger = await db.collection('earnings').find({ userId: user.id }).toArray();
-  const byState = s => ledger.filter(r => r.state === s).reduce((n, r) => n + (r.amount || 0), 0);
-  embed.addFields({
-    name: 'Balance',
-    value: `$${byState('cleared').toFixed(2)} available, ` +
-      `$${byState('pending').toFixed(2)} pending, ` +
-      `$${byState('paid').toFixed(2)} paid out`,
-    inline: false,
-  });
 
   return interaction.editReply({ embeds: [embed] });
 }
@@ -580,13 +559,125 @@ async function clearMaturedEarnings() {
   return res.modifiedCount;
 }
 
+// ── /channels — see and fix what the bot is pointing at ─────────────────────
+
+/**
+ * Name matching in /setup is a guess, and a guess is sometimes wrong. This is
+ * the manual override: point any key at any channel, or clear it so /setup
+ * makes a fresh one.
+ *
+ * Rebind before deleting a duplicate channel. If you delete first, the bot
+ * keeps a binding to a channel that no longer exists and its panel quietly
+ * stops appearing.
+ */
+const CHANNEL_KEYS = [
+  { name: 'Payments panel', value: 'PAYMENTS' },
+  { name: 'Ticket panel', value: 'TICKETS' },
+  { name: 'Ticket channels are created under', value: 'TICKETS_CATEGORY' },
+  { name: 'Leaderboard', value: 'LEADERBOARD' },
+  { name: 'Onboarding', value: 'ONBOARDING' },
+  { name: 'Submit panel', value: 'SUBMIT' },
+  { name: 'Staff review queue', value: 'SUBMISSIONS' },
+  { name: 'Active campaigns', value: 'ACTIVE_CAMPAIGNS' },
+  { name: 'Core campaigns', value: 'CORE_CAMPAIGNS' },
+  { name: 'Alerts', value: 'ALERTS' },
+  { name: 'Campaign categories created under', value: 'CAMPAIGN_PARENT' },
+  { name: 'Log: system', value: 'LOG:SYSTEM' },
+  { name: 'Log: join-leave', value: 'LOG:JOIN_LEAVE' },
+  { name: 'Log: chat', value: 'LOG:CHAT' },
+  { name: 'Log: server', value: 'LOG:SERVER' },
+  { name: 'Log: onboarding', value: 'LOG:ONBOARDING' },
+  { name: 'Log: submissions', value: 'LOG:SUBMISSION' },
+];
+
+async function channelsCommand(interaction) {
+  if (!await perms.requireStaff(interaction)) return;
+  const sub = interaction.options.getSubcommand();
+  await perms.safeDefer(interaction, true);
+
+  if (sub === 'list') {
+    const lines = CHANNEL_KEYS.map(k => {
+      const id = ids.channelId(k.value);
+      return `${id ? '✅' : '⬜'} **${k.name}**: ${id ? `<#${id}>` : 'not set'}`;
+    });
+    return interaction.editReply(
+      `${lines.join('\n')}\n\n` +
+      `Change one with \`/channels set\`. Rebind before deleting any duplicate ` +
+      `channel, otherwise the bot keeps pointing at a channel that is gone.`
+        .slice(0, 1900));
+  }
+
+  if (sub === 'rematch') {
+    // Forget every standing channel, then look again. Only useful once the
+    // duplicates are deleted: a duplicate named exactly "leaderboard" matches
+    // just as well as your "🏆 • leaderboard", and which one wins is luck.
+    for (const spec of provision.STANDING_CHANNELS) {
+      await ids.remember(`CHANNEL:${spec.key}`, null);
+    }
+    const { created, reused } = await provision.ensureStandingChannels(interaction.guild);
+
+    // Panels were pointing at the old channels, so drop the stored message IDs
+    // and post fresh ones wherever they now belong.
+    const dbm = require('./db');
+    for (const k of ['paymentsPanelMessageId', 'ticketPanelMessageId', 'leaderboardMessageId']) {
+      await dbm.setMeta(k, null);
+    }
+    await require('./payments').ensurePanel(interaction.client);
+    await require('./tickets').ensurePanel(interaction.client);
+    await leaderboard.publish(interaction.client, { rebuild: false });
+
+    return interaction.editReply(
+      (reused.length ? `Now using your existing channels: ${reused.join(', ')}.\n` : '') +
+      (created.length ? `Created because nothing matched: ${created.join(', ')}.\n` : '') +
+      `Panels reposted. Check with \`/channels list\`.`);
+  }
+
+  const key = interaction.options.getString('what');
+  const label = CHANNEL_KEYS.find(k => k.value === key)?.name || key;
+
+  if (sub === 'clear') {
+    await ids.remember(`CHANNEL:${key}`, null);
+    return interaction.editReply(
+      `**${label}** cleared. The next \`/setup\` will look for a matching channel ` +
+      `or create one.`);
+  }
+
+  // set
+  const channel = interaction.options.getChannel('channel');
+  await ids.remember(`CHANNEL:${key}`, channel.id);
+
+  // Repost whichever panel lives in the channel that just moved, so the change
+  // is visible immediately rather than after the next restart.
+  const panels = {
+    PAYMENTS: () => require('./payments').ensurePanel(interaction.client),
+    TICKETS: () => require('./tickets').ensurePanel(interaction.client),
+    SUBMIT: () => require('./panel').ensurePanel(interaction.client),
+    ONBOARDING: () => onboarding.ensurePanel(interaction.client),
+    LEADERBOARD: () => leaderboard.publish(interaction.client, { rebuild: false }),
+  };
+  let posted = '';
+  if (panels[key]) {
+    // The stored message ID belongs to the old channel, so drop it first or the
+    // bot edits the panel it left behind instead of posting a new one.
+    const metaKeys = {
+      PAYMENTS: 'paymentsPanelMessageId', TICKETS: 'ticketPanelMessageId',
+      SUBMIT: 'submitPanelMessageId', ONBOARDING: 'onboardPanelMessageId',
+      LEADERBOARD: 'leaderboardMessageId',
+    };
+    await require('./db').setMeta(metaKeys[key], null);
+    await panels[key]();
+    posted = ' Panel posted there.';
+  }
+
+  return interaction.editReply(`**${label}** now points at <#${channel.id}>.${posted}`);
+}
+
 // ── Router ──────────────────────────────────────────────────────────────────
 
 /**
- * Legacy IDs are still routed. `open_ticket` was the old single ticket button
- * and `admin:payout` the old balance button, both of which are still sitting in
- * panels already posted in the server. They forward to the modules that own
- * them now rather than breaking for anyone who presses an old message.
+ * `open_ticket` was the old single ticket button and is still sitting in panels
+ * already posted in the server, so it forwards to the module that owns tickets
+ * now rather than breaking for anyone who presses an old message.
  */
 async function route(interaction) {
   const id = interaction.customId;
@@ -594,8 +685,6 @@ async function route(interaction) {
   try {
     if (id === 'open_ticket') {
       await require('./tickets').open(interaction, 'general');
-    } else if (id === 'admin:payout') {
-      await require('./payments').requestPayout(interaction);
     } else return false;
   } catch (err) {
     console.error('[Admin] route error:', err);
@@ -605,7 +694,7 @@ async function route(interaction) {
 }
 
 module.exports = {
-  migrateCore, lockdown, campaignCommand, createCampaign, setup,
+  migrateCore, lockdown, campaignCommand, createCampaign, setup, channelsCommand,
   promote, demote, coreNominations, dashboard, editorLookup,
-  clearMaturedEarnings, route,
+  clearMaturedEarnings, route, CHANNEL_KEYS,
 };

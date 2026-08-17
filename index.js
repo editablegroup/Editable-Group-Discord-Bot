@@ -100,17 +100,14 @@ function adminCmd(builder) {
 }
 
 const NICHE_CHOICES = config.NICHES.map(n => ({ name: n.label, value: n.value }));
+// Defined in admin.js so the command choices and the handler cannot disagree.
+const CHANNEL_CHOICES = admin.CHANNEL_KEYS.map(k => ({ name: k.name, value: k.value }));
 
 const commands = [
   // ── Editor commands ──────────────────────────────────────────────────────
   new SlashCommandBuilder()
     .setName('submissions')
     .setDescription('Your edits, their status, views and earnings')
-    .setDMPermission(false),
-
-  new SlashCommandBuilder()
-    .setName('balance')
-    .setDescription('Pending, cleared and paid-out earnings')
     .setDMPermission(false),
 
   // No required option any more: it opens a dropdown of the campaigns you can
@@ -135,13 +132,35 @@ const commands = [
     .setName('setup')
     .setDescription('Create missing channels, roles and panels')),
 
+  /**
+   * Name matching in /setup is a guess. This is the manual override for when it
+   * guesses wrong, which it will on any server whose channels carry emoji.
+   */
+  adminCmd(new SlashCommandBuilder()
+    .setName('channels')
+    .setDescription('See or change which channel the bot uses for what')
+    .addSubcommand(s => s.setName('list')
+      .setDescription('Show every channel the bot is currently pointing at'))
+    .addSubcommand(s => s.setName('set')
+      .setDescription('Point the bot at an existing channel')
+      .addStringOption(o => o.setName('what').setDescription('Which one')
+        .setRequired(true).addChoices(...CHANNEL_CHOICES))
+      .addChannelOption(o => o.setName('channel').setDescription('The channel')
+        .setRequired(true)))
+    .addSubcommand(s => s.setName('clear')
+      .setDescription('Forget a channel so /setup finds or creates one again')
+      .addStringOption(o => o.setName('what').setDescription('Which one')
+        .setRequired(true).addChoices(...CHANNEL_CHOICES)))
+    .addSubcommand(s => s.setName('rematch')
+      .setDescription('Re-find every channel by name. Delete duplicates first'))),
+
   adminCmd(new SlashCommandBuilder()
     .setName('dashboard')
     .setDescription('Full operational overview')),
 
   adminCmd(new SlashCommandBuilder()
     .setName('editor')
-    .setDescription('Look up one editor: stats, views, earnings, payment method')
+    .setDescription('Look up one editor: tier, niches, payment method')
     .addUserOption(o => o.setName('user').setDescription('The editor').setRequired(true))),
 
   adminCmd(new SlashCommandBuilder()
@@ -293,12 +312,12 @@ client.on(Events.InteractionCreate, async interaction => {
 
     switch (interaction.commandName) {
       case 'submissions':  return panel.handleMySubmissions(interaction);
-      case 'balance':      return payments.balance(interaction);
       case 'leaderboard':  return leaderboardCommand(interaction);
       case 'campaigns':    return panel.handleStatus(interaction);
       case 'close':        return tickets.close(interaction);
 
       case 'setup':        return admin.setup(interaction);
+      case 'channels':     return admin.channelsCommand(interaction);
       case 'dashboard':    return admin.dashboard(interaction);
       case 'editor':       return admin.editorLookup(interaction);
       case 'promote':      return admin.promote(interaction);

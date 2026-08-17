@@ -33,8 +33,10 @@ async function warm() {
   return cache.size;
 }
 
+/** Store a resolved ID. Passing null clears it, which /channels clear relies on. */
 async function remember(key, id) {
-  cache.set(key, id);
+  if (id === null || id === undefined) cache.delete(key);
+  else cache.set(key, id);
   await setMeta('resolvedIds', Object.fromEntries(cache));
 }
 
