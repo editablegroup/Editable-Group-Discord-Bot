@@ -358,7 +358,7 @@ async function handleEntryModal(interaction) {
   const platform = detectPlatform(rawLink);
   if (!platform) {
     return perms.safeReply(interaction,
-      '❌ That link isn\'t recognised. Entries must be a **TikTok**, ' +.');
+      '❌ That link isn\'t recognised. Entries must be a **TikTok** link.');
   }
 
   const count = await getDb().collection('submissions').countDocuments({
