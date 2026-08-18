@@ -2,7 +2,7 @@
 
 const {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder,
-  ChannelType, PermissionFlagsBits, MessageFlags,
+  ChannelType, PermissionFlagsBits, MessageFlags, OverwriteType,
 } = require('discord.js');
 
 const config = require('./config');
@@ -103,7 +103,9 @@ async function open(interaction, categoryValue) {
   const overwrites = [
     { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
     {
+      // type: Member, for the same reason as the staff overwrites below.
       id: interaction.user.id,
+      type: OverwriteType.Member,
       allow: [
         PermissionFlagsBits.ViewChannel,
         PermissionFlagsBits.SendMessages,
@@ -114,7 +116,11 @@ async function open(interaction, categoryValue) {
   ];
   for (const staffId of config.STAFF_IDS) {
     overwrites.push({
+      // Staff are users, not roles, and are usually not in the client's user
+      // cache. Without an explicit type discord.js throws rather than falling
+      // back, which would have failed every ticket created after a restart.
       id: staffId,
+      type: OverwriteType.Member,
       allow: [
         PermissionFlagsBits.ViewChannel,
         PermissionFlagsBits.SendMessages,
