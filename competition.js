@@ -22,7 +22,7 @@ const provision = require('./provision');
  *    • no budget bar, no RPM, no committed-spend tracking
  *    • no 1st/2nd placement bonuses — winners are chosen by you, later
  *    • leaderboard shows posts and views only, no ranking medals
- *    • accepts TikTok, Instagram Reels and YouTube Shorts
+ *    • TikTok only, so every entry's views are read automatically
  *
  *  Nothing here posts to a channel on its own. Everything goes through
  *  /comp preview first, and the @everyone ping is an explicit opt-in flag on
@@ -284,8 +284,8 @@ async function handleLeave(interaction) {
     { value: COMP.VALUE }, { $inc: { participants: -1 } }
   );
   return perms.safeReply(interaction,
-    'You\'ve left the competition. Any entries you already submitted still stand — ' +
-    'hit **Join** again if you change your mind.');
+    'You have left the competition. Entries you already submitted still stand. ' +
+    'Press **Join** again if you change your mind.');
 }
 
 // ── Submission ──────────────────────────────────────────────────────────────
@@ -310,7 +310,7 @@ async function handlePick(interaction) {
   const campaign = await campaigns.getCampaign(value);
   if (!campaign) return perms.safeReply(interaction, '❌ That campaign no longer exists.');
 
-  // Competition entries use their own modal (multi-platform, no budget checks).
+  // Competition entries use their own modal: no budget checks, no RPM.
   if (campaign.type === 'competition') {
     const entrantRole = ids.roleId('COMPETITION');
     if (!entrantRole || !interaction.member.roles.cache.has(entrantRole)) {
@@ -327,7 +327,7 @@ async function handlePick(interaction) {
         new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId('link')
             .setLabel('Link to your edit')
-            .setPlaceholder('TikTok')
+            .setPlaceholder('https://www.tiktok.com/@you/video/…')
             .setStyle(TextInputStyle.Short).setRequired(true)),
         new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId('name')
@@ -369,14 +369,14 @@ async function handleEntryModal(interaction) {
       `❌ You've submitted the maximum of ${COMP.MAX_ENTRIES} entries.`);
   }
 
-  // Only TikTok can be auto-verified — Instagram and YouTube get reviewed by hand.
+  // TikTok is the only accepted platform, so every entry gets its views read
+  // here. A failed lookup still records the entry at 0 views rather than losing
+  // it, and the next refresh picks the real number up.
   let videoId = null, views = 0, likes = 0, thumb = null, handle = null;
-  if (platform === 'TikTok') {
-    const details = await tiktok.getVideoDetails(rawLink);
-    if (details.ok) {
-      videoId = details.videoId; views = details.views; likes = details.likes;
-      thumb = details.thumbnailUrl; handle = details.handle;
-    }
+  const details = await tiktok.getVideoDetails(rawLink);
+  if (details.ok) {
+    videoId = details.videoId; views = details.views; likes = details.likes;
+    thumb = details.thumbnailUrl; handle = details.handle;
   }
 
   const dupe = await getDb().collection('submissions').findOne({
@@ -411,8 +411,7 @@ async function handleEntryModal(interaction) {
     .setDescription(`[${clipName}](${rawLink})`)
     .addFields(
       { name: 'Editor', value: `<@${interaction.user.id}>`, inline: true },
-      { name: 'Platform', value: platform, inline: true },
-      { name: 'Views', value: platform === 'TikTok' ? views.toLocaleString('en-US') : 'Manual', inline: true },
+      { name: 'Views at entry', value: views.toLocaleString('en-US'), inline: true },
       { name: 'Entry #', value: String(count + 1), inline: true },
     )
     .setTimestamp();
@@ -428,10 +427,8 @@ async function handleEntryModal(interaction) {
   });
 
   return perms.safeReply(interaction,
-    `✅ **Entry submitted** — [${clipName}](${rawLink})\n` +
-    `Platform: **${platform}** · Entry #${count + 1}\n\n` +
-    (platform === 'TikTok'
-      ? 'Views update every 3 hours.'
+    `✅ **Entry submitted:** [${clipName}](${rawLink})\n` +
+    `Entry #${count + 1}. Views update every 3 hours.`);
 }
 
 // ── Leaderboard (posts only — no medals, no budget, no placements) ──────────
@@ -457,7 +454,7 @@ async function buildBoard(viewerId = null) {
 
   const medal = i => ['🥇', '🥈', '🥉', '🏅'][i] || `\`${String(i + 1).padStart(2, ' ')}\``;
   const body = rows.slice(0, 20).map((r, i) =>
-    `${medal(i)} **${r.username}** — [${r.views.toLocaleString('en-US')} views](${r.bestLink})` +
+    `${medal(i)} **${r.username}** [${r.views.toLocaleString('en-US')} views](${r.bestLink})` +
     (r.posts > 1 ? ` · ${r.posts} entries` : '')
   ).join('\n') || '_No approved entries yet._';
 
@@ -478,8 +475,8 @@ async function buildBoard(viewerId = null) {
     embed.addFields({
       name: 'Your position',
       value: idx >= 0
-        ? `**#${idx + 1}** — best entry ${rows[idx].views.toLocaleString('en-US')} views ` +
-          `· ${rows[idx].posts} submitted`
+        ? `**#${idx + 1}**, best entry ${rows[idx].views.toLocaleString('en-US')} views, ` +
+          `${rows[idx].posts} submitted`
         : 'No approved entries yet.',
     });
   }
