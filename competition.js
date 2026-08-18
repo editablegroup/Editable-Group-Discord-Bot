@@ -3,7 +3,7 @@
 const {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder,
   StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
-  MessageFlags, ChannelType, PermissionFlagsBits,
+  MessageFlags, ChannelType, PermissionFlagsBits, OverwriteType,
 } = require('discord.js');
 
 const config = require('./config');
@@ -153,8 +153,15 @@ async function createCompetitionSpace(guild) {
   }
   await ids.remember('ROLE:COMPETITION', role.id);
 
+  // type: Member is required, not optional.
+  //
+  // Without it discord.js resolves the ID by looking it up in the client's user
+  // CACHE, and throws "not a cached User or Role" when it misses. Right after a
+  // boot that cache is empty, so this threw every time and the category was
+  // never created, while the role above it (which takes no overwrites) was.
   const staffAllow = config.STAFF_IDS.map(id => ({
     id,
+    type: OverwriteType.Member,
     allow: [
       PermissionFlagsBits.ViewChannel,
       PermissionFlagsBits.SendMessages,
