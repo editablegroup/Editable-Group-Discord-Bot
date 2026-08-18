@@ -292,8 +292,6 @@ async function handleLeave(interaction) {
 
 const PLATFORM_PATTERNS = {
   TikTok: /tiktok\.com/i,
-  Instagram: /instagram\.com\/(reel|p|tv)\//i,
-  'YouTube Shorts': /(youtube\.com\/shorts\/|youtu\.be\/)/i,
 };
 
 function detectPlatform(url) {
@@ -329,7 +327,7 @@ async function handlePick(interaction) {
         new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId('link')
             .setLabel('Link to your edit')
-            .setPlaceholder('TikTok, Instagram Reel or YouTube Short')
+            .setPlaceholder('TikTok')
             .setStyle(TextInputStyle.Short).setRequired(true)),
         new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId('name')
@@ -360,8 +358,7 @@ async function handleEntryModal(interaction) {
   const platform = detectPlatform(rawLink);
   if (!platform) {
     return perms.safeReply(interaction,
-      '❌ That link isn\'t recognised. Entries must be a **TikTok**, ' +
-      '**Instagram Reel** or **YouTube Short**.');
+      '❌ That link isn\'t recognised. Entries must be a **TikTok**, ' +.');
   }
 
   const count = await getDb().collection('submissions').countDocuments({
@@ -434,8 +431,7 @@ async function handleEntryModal(interaction) {
     `✅ **Entry submitted** — [${clipName}](${rawLink})\n` +
     `Platform: **${platform}** · Entry #${count + 1}\n\n` +
     (platform === 'TikTok'
-      ? 'Views update every 12 hours.'
-      : 'Instagram and YouTube views are counted manually before judging.'));
+      ? 'Views update every 3 hours.'
 }
 
 // ── Leaderboard (posts only — no medals, no budget, no placements) ──────────
