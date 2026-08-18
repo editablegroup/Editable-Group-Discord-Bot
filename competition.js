@@ -78,6 +78,7 @@ async function buildSubmitDropdown(member) {
 
   for (const c of list) {
     if (c.type === 'competition') {
+      if (c.value !== COMP.VALUE) continue;
       const compRole = ids.roleId('COMPETITION');
       if (!member || !compRole || !member.roles.cache.has(compRole)) continue;
       options.push({
