@@ -303,7 +303,7 @@ module.exports = {
     JUDGING_DETAIL: 'Highest view count on a single entry. Enter as many edits as '
                   + 'you like, your best one is the one that counts.',
 
-    PLATFORMS: ['TikTok', 'Instagram Reels', 'YouTube Shorts'],
+    PLATFORMS: ['TikTok'],
 
     BRIEF_SHORT: 'Open brief, any style, any niche. High quality edits.',
     BRIEF_PLAIN: 'Open brief, any style, any niche. High quality edits.',
