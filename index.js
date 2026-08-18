@@ -207,24 +207,18 @@ const commands = [
     .setName('comp')
     .setDescription('Manage the edit competition')
     .addSubcommand(s => s.setName('setup')
-      .setDescription('Create the competition and enable the submit dropdown'))
+      .setDescription('Create the competition, its role, category and channels'))
     .addSubcommand(s => s.setName('preview')
       .setDescription('See a panel privately before posting it')
       .addStringOption(o => o.setName('panel').setDescription('Which panel').setRequired(true)
         .addChoices(
           { name: 'Public announcement (Join/Leave)', value: 'public' },
-          { name: 'Announcement (private category)', value: 'announcement' },
-          { name: 'Rules', value: 'rules' },
-          { name: 'Submit info', value: 'submitinfo' },
         )))
     .addSubcommand(s => s.setName('post')
       .setDescription('Publish a panel to its channel')
       .addStringOption(o => o.setName('panel').setDescription('Which panel').setRequired(true)
         .addChoices(
           { name: 'Public announcement (Join/Leave)', value: 'public' },
-          { name: 'Announcement (private category)', value: 'announcement' },
-          { name: 'Rules', value: 'rules' },
-          { name: 'Submit info', value: 'submitinfo' },
         ))
       .addBooleanOption(o => o.setName('ping')
         .setDescription('Ping @everyone? Defaults to NO').setRequired(false)))

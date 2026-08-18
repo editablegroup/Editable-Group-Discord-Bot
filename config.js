@@ -282,45 +282,48 @@ module.exports = {
   // Everything the competition says lives here. Change the copy in this block,
   // run /comp preview, and you'll see it before anything is posted.
   COMPETITION: {
-    VALUE: 'edit_comp_1000',
-    TITLE: '$1,000 Edit Competition',
+    VALUE: 'edit_comp_500',
+    TITLE: '$500 Edit Competition',
 
-    // Deadline: 24 August 2026, 23:59 BST (= 22:59 UTC).
-    // Discord renders this in each member's own timezone automatically.
-    DEADLINE_UNIX: 1787612340,
+    // 31 August 2026, 23:59 BST (22:59 UTC, BST is UTC+1 on that date).
+    // Discord renders <t:...> in each member's own timezone automatically, so
+    // nobody has to work out what BST means for them.
+    DEADLINE_UNIX: 1788217140,
 
-    // ⚠️ SET YOUR PRIZE SPLIT. These are placeholders — change them.
-    PRIZE_SUMMARY: '**$1,000** total — 1st $500 · 2nd $250 · 3rd $150 · 4th $100',
+    // $500 total across three places.
+    PRIZE_SUMMARY: '**$500** total. 1st $300, 2nd $125, 3rd $75',
     PRIZES_DETAIL:
-      '🥇 **1st — $500**\n' +
-      '🥈 **2nd — $250**\n' +
-      '🥉 **3rd — $150**\n' +
-      '🏅 **4th — $100**',
-
-    // Plain-text variants (used by the non-embed announcement panels)
-    PRIZE_SUMMARY_PLAIN: '1st $500 · 2nd $250 · 3rd $150 · 4th $100',
-    JUDGING_PLAIN: 'Highest view count. Most views wins.',
-    BRIEF_PLAIN: 'Open brief, any style, any niche. High quality edits.',
+      '🥇 **1st: $300**\n' +
+      '🥈 **2nd: $125**\n' +
+      '🥉 **3rd: $75**',
+    PRIZE_SUMMARY_PLAIN: '1st $300, 2nd $125, 3rd $75',
 
     JUDGING: 'Highest view count',
-    JUDGING_DETAIL: 'Highest view count on a single entry. Submit as many as you '
-                  + 'like — your best one counts.',
+    JUDGING_PLAIN: 'Highest view count. Most views wins.',
+    JUDGING_DETAIL: 'Highest view count on a single entry. Enter as many edits as '
+                  + 'you like, your best one is the one that counts.',
 
     PLATFORMS: ['TikTok', 'Instagram Reels', 'YouTube Shorts'],
 
-    BRIEF_SHORT: 'Open brief — any style, any niche. High quality edits.',
+    BRIEF_SHORT: 'Open brief, any style, any niche. High quality edits.',
+    BRIEF_PLAIN: 'Open brief, any style, any niche. High quality edits.',
     BRIEF_FULL:
-      '**Open brief.** Any style, any niche — anime, film, TV, sports, '
-    + 'celeb, fancam, gaming, music, whatever you\'re best at.\n\n'
-    + 'The only requirement is that it\'s a **high quality edit**. Show us what '
-    + 'you can actually do.',
+      '**Open brief.** Any style, any niche: anime, film, TV, sports, celeb, '
+    + 'fancam, gaming, music, whatever you are best at.\n\n'
+    + 'The only requirement is that it is a **high quality edit**.',
 
-    CAPTION: 'Get paid for your edits, join Editable: discord.gg/editable @editable.group #editable1k',
-    HASHTAG: '#editable1k',
-    MENTION: '@editable.group',
+    // No caption config here on purpose. The caption and tagging rules are
+    // written by hand in the competition's own rules channel, and the bot does
+    // not check them. Duplicating the rule text here would mean two versions of
+    // it that drift apart.
 
-    DROPDOWN_LABEL: '💲1000 EDIT COMPETITION',
+    DROPDOWN_LABEL: '🏆 $500 EDIT COMPETITION',
     MAX_ENTRIES: 0, // 0 = unlimited
+
+    // Channels created inside the competition category by /comp setup.
+    // announcements and rules are read-only for entrants.
+    CATEGORY_NAME: '$500 Edit Competition',
+    CHANNELS_TO_CREATE: ['announcements', 'rules', 'chat'],
   },
 
   /**

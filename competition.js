@@ -3,7 +3,7 @@
 const {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder,
   StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
-  MessageFlags,
+  MessageFlags, ChannelType, PermissionFlagsBits,
 } = require('discord.js');
 
 const config = require('./config');
@@ -12,6 +12,7 @@ const { getDb, getMeta, setMeta } = require('./db');
 const tiktok = require('./tiktok');
 const perms = require('./permissions');
 const campaigns = require('./campaigns');
+const provision = require('./provision');
 
 /**
  * ============================================================================
@@ -55,65 +56,15 @@ function buildPublicPanel() {
   return { content, components: [row] };
 }
 
-/** Announcement inside the private competition category. Plain text. */
-function buildAnnouncementPanel() {
-  const d = COMP.DEADLINE_UNIX;
-  const content =
-    `🏆 **${COMP.TITLE}**\n\n` +
-    `${COMP.PRIZES_DETAIL}\n\n` +
-    `\u2696\ufe0f **Judged on:** ${COMP.JUDGING_PLAIN}\n` +
-    `📅 **Deadline:** <t:${d}:F> (<t:${d}:R>)\n` +
-    `📱 **Platforms:** ${COMP.PLATFORMS.join(', ')}\n\n` +
-    `**Brief:** ${COMP.BRIEF_PLAIN}\n\n` +
-    `Read the rules before you post \u2014 the caption is required.`;
-
-  return { content };
-}
-
-/** Rules panel — includes the mandatory caption. */
-function buildRulesPanel() {
-  const embed = new EmbedBuilder()
-    .setColor(config.BRAND_COLOR)
-    .setTitle('📋 Rules')
-    .setDescription(
-      '**1. Use this caption**\n' +
-      'Copy it exactly. You can add your own text after it.\n\n' +
-      `> ${COMP.CAPTION}\n\n` +
-     '**2. Tag us**\n' +
-      `Your post must include ${COMP.HASHTAG} and tag **${COMP.MENTION}** — ` +
-      'that\'s how we find entries. Missing either one and it won\'t count.\n\n' +
-      '**3. Brief**\n' +
-      `${COMP.BRIEF_PLAIN}\n\n` +
-      '**4. Judged on views**\n' +
-      'Submit as many edits as you like, **your single best-performing entry is ' +
-      'what counts.**.\n\n' +
-      'Views are counted at the deadline.\n\n' +
-      '**5. Your own work**\n' +
-      'Made by you, posted from your account. Reposts are disqualified.\n\n' +
-      '**6. Posted during the competition**\n' +
-      'Old uploads don\'t count.\n\n' +
-      '**7. No view botting**\n' +
-      'Artificial engagement disqualifies every entry from that account.\n\n' +
-      '**8. Keep the post up**\n' +
-      'Entries deleted before judging are void.'
-    );
-
-  return { embeds: [embed] };
-}
-
-/** Submit info panel — points at the real submit channel. */
-function buildSubmitInfoPanel() {
-  const embed = new EmbedBuilder()
-    .setColor(config.BRAND_COLOR)
-    .setTitle('📩 How to submit')
-    .setDescription(
-      `Post your edit, go to <#${config.CHANNELS.SUBMIT}>, hit **Submit Edit** and ` +
-      `pick **${COMP.DROPDOWN_LABEL}** from the dropdown.\n\n` +
-      'Submit as many entries as you like. Track them with `/submissions`.'
-    );
-
-  return { embeds: [embed] };
-}
+/**
+ * Only the public announcement is built by the bot, because it is the one that
+ * carries the Join and Leave buttons and therefore has to be a bot message.
+ *
+ * The announcement, rules and chat channels inside the competition category are
+ * written by hand. The bot creates the channels and stops there: rule text in
+ * config would be a second copy of the rules that drifts out of step with the
+ * one people actually read.
+ */
 
 // ── Submit dropdown (lives in the submit channel) ────────────────────────────
 
@@ -127,7 +78,8 @@ async function buildSubmitDropdown(member) {
 
   for (const c of list) {
     if (c.type === 'competition') {
-      if (!member || !member.roles.cache.has(config.ROLES.COMPETITION)) continue;
+      const compRole = ids.roleId('COMPETITION');
+      if (!member || !compRole || !member.roles.cache.has(compRole)) continue;
       options.push({
         label: COMP.DROPDOWN_LABEL.slice(0, 100),
         description: 'Submit your competition entry',
@@ -155,15 +107,6 @@ async function buildSubmitDropdown(member) {
   );
 }
 
-function buildSubmitChannelPanel() {
-  return new EmbedBuilder()
-    .setColor(config.BRAND_COLOR)
-    .setTitle('📩 Submit your edit')
-    .setDescription(
-      'Pick what you\'re submitting to from the dropdown below, then paste your link.\n\n' +
-      'Use `/submissions` any time to see your entries and views.'
-    );
-}
 
 /**
  * Refresh the submit panel.
@@ -177,14 +120,121 @@ async function ensureSubmitPanel(client) {
   return require('./panel').ensurePanel(client);
 }
 
+// ── Competition space (role + category + channels) ──────────────────────────
+
+/**
+ * Build the competition's private home: one role, one category only that role
+ * can see, and the channels inside it.
+ *
+ * announcements and rules are read-only for entrants, chat is not. Staff keep
+ * send access everywhere so you can write the rules once the channels exist.
+ *
+ * The role is matched by name so running this twice does not leave two
+ * competition roles behind, and so a new competition never inherits the role
+ * from the last one.
+ */
+async function createCompetitionSpace(guild) {
+  const capability = provision.checkCapability(guild);
+  if (!capability.ok) throw new Error(capability.problems.join(' '));
+
+  const name = COMP.CATEGORY_NAME;
+
+  // Role: matched by NAME, not by the ID in config.
+  //
+  // config.ROLES.COMPETITION still holds the role from the previous $1,000
+  // competition. Reusing that would put this competition's entrants into the
+  // old competition's role and category. Matching on the competition's own name
+  // gives a fresh role per competition while still being safe to run twice.
+  let role = guild.roles.cache.find(r => r.name === name);
+  if (!role) {
+    role = await guild.roles.create({
+      name, mentionable: true, reason: 'Edit competition entrants',
+    });
+  }
+  await ids.remember('ROLE:COMPETITION', role.id);
+
+  const staffAllow = config.STAFF_IDS.map(id => ({
+    id,
+    allow: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.ReadMessageHistory,
+      PermissionFlagsBits.ManageMessages,
+    ],
+  }));
+
+  // Reuse a category of the same name if one is already there, so running
+  // /comp setup twice does not leave two competition categories behind.
+  const existingCategory = guild.channels.cache.find(
+    c => c.type === ChannelType.GuildCategory && c.name === name);
+
+  const category = existingCategory || await guild.channels.create({
+    name,
+    type: ChannelType.GuildCategory,
+    permissionOverwrites: [
+      { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+      {
+        id: role.id,
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+      },
+      ...staffAllow,
+    ],
+    reason: 'Edit competition',
+  });
+
+  const channels = {};
+  for (const channelName of COMP.CHANNELS_TO_CREATE) {
+    const readOnly = channelName !== 'chat';
+    try {
+      const already = guild.channels.cache.find(
+        c => c.parentId === category.id && c.name === channelName);
+      if (already) { channels[channelName] = already.id; continue; }
+
+      const created = await guild.channels.create({
+        name: channelName,
+        type: ChannelType.GuildText,
+        parent: category.id,
+        permissionOverwrites: [
+          { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+          {
+            id: role.id,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+            // Entrants read announcements and rules, they do not post in them.
+            ...(readOnly
+              ? { deny: [PermissionFlagsBits.SendMessages] }
+              : { allow: [
+                  PermissionFlagsBits.ViewChannel,
+                  PermissionFlagsBits.ReadMessageHistory,
+                  PermissionFlagsBits.SendMessages,
+                  PermissionFlagsBits.AttachFiles,
+                ] }),
+          },
+          ...staffAllow,
+        ],
+        reason: 'Edit competition',
+      });
+      channels[channelName] = created.id;
+      await new Promise(r => setTimeout(r, 300)); // channel creation is rate limited
+    } catch (err) {
+      console.error(`[Comp] channel ${channelName}:`, err.message);
+    }
+  }
+
+  const space = { roleId: role.id, categoryId: category.id, categoryName: name, channels };
+  await getDb().collection('campaigns').updateOne(
+    { value: COMP.VALUE }, { $set: { roleId: role.id, space } });
+  return space;
+}
+
 // ── Join / Leave ────────────────────────────────────────────────────────────
 
 async function handleJoin(interaction) {
   if (!await perms.enforceCooldown(interaction, 'compjoin', 3000)) return;
   if (!await perms.requireOnboarded(interaction)) return;
 
-  if (interaction.member.roles.cache.has(config.ROLES.COMPETITION)) {
-    return perms.safeReply(interaction, '✅ You\'re already entered.');
+  const compRole = ids.roleId('COMPETITION');
+  if (compRole && interaction.member.roles.cache.has(compRole)) {
+    return perms.safeReply(interaction, 'You are already entered.');
   }
 
   const comp = await campaigns.getCampaign(COMP.VALUE);
@@ -196,30 +246,40 @@ async function handleJoin(interaction) {
   }
 
   try {
-    await interaction.member.roles.add(config.ROLES.COMPETITION, 'Joined competition');
+    await interaction.member.roles.add(compRole, 'Joined competition');
   } catch (err) {
     console.error('[Comp] role add:', err.message);
     return perms.safeReply(interaction,
-      '❌ Couldn\'t add your role. Ping a staff member — that one\'s on us.');
+      'Could not give you the competition role, so the category stays locked. ' +
+      'That is a permissions problem on our end. Ping a staff member.');
   }
 
   await getDb().collection('campaigns').updateOne(
     { value: COMP.VALUE }, { $inc: { participants: 1 } }
   );
 
+  // Point at the channels /comp setup created rather than any hardcoded ID, so
+  // this cannot send people to a category from a previous competition.
+  const made = comp.space?.channels || {};
+  const rules = made.rules ? `<#${made.rules}>` : 'the rules channel';
+  const where = comp.space?.categoryName
+    ? `The **${comp.space.categoryName}** category is now visible.`
+    : 'The competition category is now visible.';
+
   return perms.safeReply(interaction,
-    `🎉 **You're in the ${COMP.TITLE}.**\n\n` +
-    `Everything you need is in <#${config.CHANNELS.COMP_ANNOUNCEMENT}> — ` +
-    `read <#${config.CHANNELS.COMP_RULES}> before you post, the caption is mandatory.\n\n` +
-    `Deadline: <t:${COMP.DEADLINE_UNIX}:R>`);
+    `🎉 **You're in the ${COMP.TITLE}.**\n` +
+    `${COMP.PRIZE_SUMMARY_PLAIN}, judged on ${COMP.JUDGING.toLowerCase()}.\n` +
+    `${where} Read ${rules} before you post.\n` +
+    `Submit entries in <#${ids.channelId('SUBMIT')}>. Closes <t:${COMP.DEADLINE_UNIX}:R>.`);
 }
 
 async function handleLeave(interaction) {
   if (!await perms.enforceCooldown(interaction, 'compleave', 3000)) return;
-  if (!interaction.member.roles.cache.has(config.ROLES.COMPETITION)) {
+  const compRoleId = ids.roleId('COMPETITION');
+  if (!compRoleId || !interaction.member.roles.cache.has(compRoleId)) {
     return perms.safeReply(interaction, 'You\'re not entered.');
   }
-  await interaction.member.roles.remove(config.ROLES.COMPETITION, 'Left competition').catch(() => {});
+  await interaction.member.roles.remove(compRoleId, 'Left competition').catch(() => {});
   await getDb().collection('campaigns').updateOne(
     { value: COMP.VALUE }, { $inc: { participants: -1 } }
   );
@@ -254,7 +314,8 @@ async function handlePick(interaction) {
 
   // Competition entries use their own modal (multi-platform, no budget checks).
   if (campaign.type === 'competition') {
-    if (!interaction.member.roles.cache.has(config.ROLES.COMPETITION)) {
+    const entrantRole = ids.roleId('COMPETITION');
+    if (!entrantRole || !interaction.member.roles.cache.has(entrantRole)) {
       return perms.safeReply(interaction,
         `❌ Join the competition first in <#${config.CHANNELS.COMP_ANNOUNCE_PUBLIC}>.`);
     }
@@ -360,7 +421,7 @@ async function handleEntryModal(interaction) {
     .setTimestamp();
   if (thumb) embed.setThumbnail(thumb);
 
-  const reviewChannel = await interaction.client.channels.fetch(config.CHANNELS.SUBMISSIONS);
+  const reviewChannel = await interaction.client.channels.fetch(ids.channelId('SUBMISSIONS'));
   await reviewChannel.send({
     embeds: [embed],
     components: [new ActionRowBuilder().addComponents(
@@ -432,10 +493,11 @@ async function buildBoard(viewerId = null) {
 // ── /comp command ───────────────────────────────────────────────────────────
 
 const TARGETS = {
-  public: { channel: () => config.CHANNELS.COMP_ANNOUNCE_PUBLIC, build: buildPublicPanel, key: 'compPublicMsgId' },
-  announcement: { channel: () => config.CHANNELS.COMP_ANNOUNCEMENT, build: buildAnnouncementPanel, key: 'compAnnounceMsgId' },
-  rules: { channel: () => config.CHANNELS.COMP_RULES, build: buildRulesPanel, key: 'compRulesMsgId' },
-  submitinfo: { channel: () => config.CHANNELS.COMP_SUBMIT_INFO, build: buildSubmitInfoPanel, key: 'compSubmitInfoMsgId' },
+  public: {
+    channel: () => ids.channelId('COMP_ANNOUNCE_PUBLIC'),
+    build: buildPublicPanel,
+    key: 'compPublicMsgId',
+  },
 };
 
 async function command(interaction) {
@@ -450,7 +512,7 @@ async function command(interaction) {
     const payload = target.build();
     const header = `─── **PREVIEW: \`${which}\`** → <#${target.channel()}> ───\n\n`;
     return interaction.editReply({
-      content: header + (payload.content || '_(embed only — see below)_'),
+      content: header + (payload.content || '_(embed only, see below)_'),
       embeds: payload.embeds || [],
       components: payload.components || [],
     });
@@ -472,9 +534,30 @@ async function command(interaction) {
       { upsert: true }
     );
     await ensureSubmitPanel(interaction.client);
-    return interaction.editReply(
-      `Competition created. The submit dropdown is live in <#${ids.channelId('SUBMIT')}>.\n\n` +
-      'Preview the panels with `/comp preview`, then post them with `/comp post`.');
+
+    let spaceLine;
+    try {
+      const space = await createCompetitionSpace(interaction.guild);
+      const made = Object.keys(space.channels);
+      spaceLine =
+        `Created the **${space.categoryName}** role and category with ` +
+        `${made.length} channels (${made.join(', ')}). ` +
+        `Pressing Join grants the role and unlocks it.\n` +
+        `announcements and rules are read-only for entrants. Staff can post in both, ` +
+        `so write the rules there now.`;
+    } catch (err) {
+      spaceLine = `The competition exists but its role and category were not created: ${err.message}`;
+    }
+
+    const announce = ids.channelId('COMP_ANNOUNCE_PUBLIC');
+    return interaction.editReply((
+      `**${COMP.TITLE}** is set up. ${COMP.PRIZE_SUMMARY_PLAIN}. ` +
+      `Closes <t:${COMP.DEADLINE_UNIX}:F>.\n` +
+      `${spaceLine}\n` +
+      `The submit dropdown is live in <#${ids.channelId('SUBMIT')}>.\n\n` +
+      `Check the announcement with \`/comp preview panel:public\`, then post it to ` +
+      `${announce ? `<#${announce}>` : 'the announcement channel'} with ` +
+      `\`/comp post panel:public\`.`).slice(0, 1900));
   }
 
   // ── post: actually publishes ──
@@ -484,9 +567,13 @@ async function command(interaction) {
     const ping = interaction.options.getBoolean('ping') ?? false;
     const target = TARGETS[which];
 
+    // ids.channelId returns null rather than a SET_ME placeholder, so a missing
+    // channel is a null check rather than a string prefix test.
     const channelId = target.channel();
-    if (!channelId || channelId.startsWith('SET_ME')) {
-      return interaction.editReply(`❌ No channel set for \`${which}\` in config.js.`);
+    if (!channelId) {
+      return interaction.editReply(
+        `No channel is set for the ${which} announcement. ` +
+        'Set CHANNELS.COMP_ANNOUNCE_PUBLIC in config.js.');
     }
 
     const channel = await interaction.client.channels.fetch(channelId).catch(() => null);
@@ -552,5 +639,5 @@ async function route(interaction) {
 
 module.exports = {
   command, route, ensureSubmitPanel, buildSubmitDropdown, buildBoard,
-  buildPublicPanel, buildAnnouncementPanel, buildRulesPanel, buildSubmitInfoPanel,
+  buildPublicPanel, createCompetitionSpace,
 };

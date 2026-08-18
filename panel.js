@@ -88,8 +88,9 @@ async function ensurePanel(client) {
  */
 async function accessibleCampaigns(member) {
   const list = await campaigns.listCampaigns({ status: 'active' });
+  const compRole = ids.roleId('COMPETITION');
   return list.filter(c => c.type === 'competition'
-    ? member.roles.cache.has(config.ROLES.COMPETITION)
+    ? Boolean(compRole) && member.roles.cache.has(compRole)
     : perms.canAccessCampaign(member, c));
 }
 
