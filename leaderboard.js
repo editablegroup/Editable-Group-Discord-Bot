@@ -25,7 +25,7 @@ const { getDb, getMeta, setMeta } = require('./db');
  * ============================================================================
  */
 
-const TOP_N = 20;
+const TOP_N = config.LEADERBOARD.TOP_N;
 
 /**
  * Aggregate lifetime earnings per editor across every campaign.
@@ -33,22 +33,37 @@ const TOP_N = 20;
  * manual adjustments count too.
  */
 async function rebuild() {
-  const rows = await getDb().collection('earnings').aggregate([
-    { $match: { state: { $in: ['pending', 'cleared', 'paid'] } } },
+  const ledgerRows = await getDb().collection('earnings').aggregate([
+    { $match: {
+        state: { $in: ['pending', 'cleared', 'paid'] },
+        createdAt: { $gte: config.LEADERBOARD.BASELINE_CUTOFF },
+    } },
     { $group: { _id: '$userId', total: { $sum: '$amount' } } },
     { $match: { total: { $gt: 0 } } },
-    { $sort: { total: -1 } },
-    { $limit: TOP_N },
   ]).toArray();
 
-  // Attach a display name for each. One indexed lookup per row, capped at 20.
+  const totals = new Map(config.LEADERBOARD.MANUAL_TOTALS.map(row => [
+    row.userId, { ...row },
+  ]));
+  for (const row of ledgerRows) {
+    const existing = totals.get(row._id);
+    if (existing) existing.total += row.total;
+    else totals.set(row._id, { userId: row._id, name: null, total: row.total });
+  }
+
+  const rows = [...totals.values()]
+    .filter(row => row.total > 0)
+    .sort((a, b) => b.total - a.total)
+    .slice(0, TOP_N);
+
+  // Manual rows already have names. New earners need one indexed editor lookup.
   const enriched = [];
   for (const row of rows) {
-    const editor = await getDb().collection('editors').findOne(
-      { userId: row._id }, { projection: { username: 1, displayName: 1 } });
+    const editor = row.name ? null : await getDb().collection('editors').findOne(
+      { userId: row.userId }, { projection: { username: 1, displayName: 1 } });
     enriched.push({
-      userId: row._id,
-      name: editor?.username || editor?.displayName || 'unknown',
+      userId: row.userId,
+      name: row.name || editor?.username || editor?.displayName || 'unknown',
       total: row.total,
     });
   }
@@ -60,17 +75,27 @@ async function rebuild() {
 function buildEmbed(rows, updatedAt) {
   const body = rows.length
     ? rows.map((r, i) =>
-        `${String(i + 1).padStart(2, ' ')}. \`${r.name}\` - $${r.total.toFixed(2)}`
+        `${i + 1}. \`${r.name}\` - **$${r.total.toLocaleString('en-US', {
+          minimumFractionDigits: 2, maximumFractionDigits: 2 })}**`
       ).join('\n')
     : copy.leaderboard.allTimeEmpty;
 
   return new EmbedBuilder()
-    .setColor(config.BRAND_COLOR)
+    .setColor(config.LEADERBOARD.COLOR)
     .setTitle(copy.leaderboard.allTimeTitle)
-    .setDescription('```\n' + body.slice(0, 3900) + '\n```')
+    .setDescription(body.slice(0, 3900))
     .setFooter({ text: copy.leaderboard.allTimeFooter(
-      updatedAt ? new Date(updatedAt).toUTCString() : 'never') })
+      updatedAt ? formatUtc(updatedAt) : 'never') })
     .setTimestamp(updatedAt ? new Date(updatedAt) : new Date());
+}
+
+function formatUtc(value) {
+  const date = new Date(value);
+  const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][date.getUTCMonth()];
+  const time = [date.getUTCHours(), date.getUTCMinutes(), date.getUTCSeconds()]
+    .map(n => String(n).padStart(2, '0')).join(':');
+  return `${month} ${date.getUTCDate()}, ${date.getUTCFullYear()} ${time} UTC`;
 }
 
 /**
