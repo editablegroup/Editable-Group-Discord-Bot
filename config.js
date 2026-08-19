@@ -83,7 +83,7 @@ module.exports = {
     TICKETS_CATEGORY: 'SET_ME_TICKETS_CATEGORY_ID',
 
     // Persistent all-time leaderboard. One message, edited in place.
-    LEADERBOARD: 'SET_ME_LEADERBOARD_CHANNEL_ID',
+    LEADERBOARD: '1538319414179659918',
 
     // Where /campaign create puts each campaign's own category.
     CAMPAIGN_PARENT: 'SET_ME_CAMPAIGN_PARENT_CATEGORY_ID',
@@ -277,6 +277,28 @@ module.exports = {
   },
 
   BRAND_COLOR: 0x1e4fd8,
+
+  // ── All-time leaderboard ─────────────────────────────────────────────────
+  // These totals cover every payout through 19 August 2026. Earnings recorded
+  // from 20 August onwards are added on top, so the manual history is not
+  // double-counted if old ledger rows still exist in MongoDB.
+  LEADERBOARD: {
+    COLOR: 0x103a99,
+    TOP_N: 10,
+    BASELINE_CUTOFF: new Date('2026-08-20T00:00:00.000Z'),
+    MANUAL_TOTALS: [
+      { userId: '803343274643423265',  name: 'Dxrkhood', total: 1019.48 },
+      { userId: '791751239275774012',  name: 'Wandy',    total: 437.75 },
+      { userId: '1329112451446476847', name: 'Juarez',   total: 377.69 },
+      { userId: '880954957132611595',  name: 'Void',     total: 234.36 },
+      { userId: '960171711674847282',  name: 'Cilord',   total: 202.46 },
+      { userId: '996919845373366362',  name: 'Roca',     total: 162.43 },
+      { userId: '705820024572608562',  name: 'Jylo',     total: 90.08 },
+      { userId: '1267888912622161940', name: 'Muz',      total: 80.00 },
+      { userId: '1157931934584950824', name: 'Guzi',     total: 70.00 },
+      { userId: '720990483177799681',  name: 'Shxoza',   total: 58.12 },
+    ],
+  },
 
   // ── Edit competition ────────────────────────────────────────────
   // Everything the competition says lives here. Change the copy in this block,
