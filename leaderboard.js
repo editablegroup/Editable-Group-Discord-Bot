@@ -22,6 +22,7 @@ const { getDb, getMeta, setMeta } = require('./db');
  *  Rebuilt on campaign end rather than on every stats run: the numbers only
  *  become final when a campaign closes, and editing one message every 3 hours
  *  forever is a rate limit you do not need to spend.
+ *  The 2026 manual baseline is merged before newer ledger rows are ranked.
  * ============================================================================
  */
 
