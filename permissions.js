@@ -35,6 +35,11 @@ function getTier(member) {
   if (isStaff(member.id)) return config.TIERS.STAFF;
   const coreRole = require('./ids').roleId('CORE');
   if (coreRole && member.roles.cache.has(coreRole)) return config.TIERS.CORE;
+  // A database wipe can remove the resolved Core role ID while Discord keeps
+  // the role and its members. Recover those members by the configured name.
+  if (member.roles.cache.some(role => role.name === config.ROLE_NAMES.CORE)) {
+    return config.TIERS.CORE;
+  }
   // Your original hand-picked 100 — vetted before onboarding existed, so the
   // legacy Editor role counts as full access. No re-onboarding.
   if (member.roles.cache.has(config.ROLES.LEGACY_EDITOR)) return config.TIERS.CORE;
@@ -94,7 +99,38 @@ async function requireStaff(interaction) {
 /** Guard an editor-only interaction (must have completed onboarding). */
 async function requireOnboarded(interaction) {
   const member = interaction.member;
-  if (tierAtLeast(member, config.TIERS.NETWORK)) return true;
+  const tier = getTier(member);
+  if (TIER_RANK[tier] >= TIER_RANK[config.TIERS.NETWORK]) {
+    // Core membership predates the wiped onboarding records. Recreate the
+    // minimum editor row so submissions work without forcing onboarding again.
+    if (tier === config.TIERS.CORE) {
+      try {
+        await require('./db').getDb().collection('editors').updateOne(
+          { userId: interaction.user.id },
+          {
+            $set: {
+              username: interaction.user.username,
+              tier: config.TIERS.CORE,
+              updatedAt: new Date(),
+            },
+            $setOnInsert: {
+              userId: interaction.user.id,
+              joinedAt: new Date(),
+              lifetimeEarnings: 0,
+              pendingBalance: 0,
+              clearedBalance: 0,
+              paidOut: 0,
+              restoredFromCoreRole: true,
+            },
+          },
+          { upsert: true }
+        );
+      } catch (err) {
+        console.error('[Permissions] Core editor restore:', err.message);
+      }
+    }
+    return true;
+  }
   await safeReply(interaction, DENY.onboard);
   return false;
 }

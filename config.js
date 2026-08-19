@@ -46,6 +46,12 @@ module.exports = {
     COMPETITION: '1536767907948798113',
   },
 
+  // Role-name fallbacks recover access when MongoDB loses a resolved role ID.
+  // IDs remain the primary check because names can be changed in Discord.
+  ROLE_NAMES: {
+    CORE: 'Core',
+  },
+
   // ── Channels ──────────────────────────────────────────────────────────────
   CHANNELS: {
     ONBOARDING: '1508909360510795837',
