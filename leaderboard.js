@@ -34,22 +34,30 @@ const TOP_N = config.LEADERBOARD.TOP_N;
  * manual adjustments count too.
  */
 async function rebuild() {
-  const ledgerRows = await getDb().collection('earnings').aggregate([
-    { $match: {
-        state: { $in: ['pending', 'cleared', 'paid'] },
-        createdAt: { $gte: config.LEADERBOARD.BASELINE_CUTOFF },
-    } },
-    { $group: { _id: '$userId', total: { $sum: '$amount' } } },
-    { $match: { total: { $gt: 0 } } },
-  ]).toArray();
-
   const totals = new Map(config.LEADERBOARD.MANUAL_TOTALS.map(row => [
     row.userId, { ...row },
   ]));
-  for (const row of ledgerRows) {
-    const existing = totals.get(row._id);
-    if (existing) existing.total += row.total;
-    else totals.set(row._id, { userId: row._id, name: null, total: row.total });
+
+  // The supplied historical totals must still publish if old ledger data is
+  // missing or malformed. Newer earnings are an optional addition, not a
+  // dependency for the board itself.
+  try {
+    const ledgerRows = await getDb().collection('earnings').aggregate([
+      { $match: {
+          state: { $in: ['pending', 'cleared', 'paid'] },
+          createdAt: { $gte: config.LEADERBOARD.BASELINE_CUTOFF },
+      } },
+      { $group: { _id: '$userId', total: { $sum: '$amount' } } },
+      { $match: { total: { $gt: 0 } } },
+    ]).toArray();
+
+    for (const row of ledgerRows) {
+      const existing = totals.get(row._id);
+      if (existing) existing.total += row.total;
+      else totals.set(row._id, { userId: row._id, name: null, total: row.total });
+    }
+  } catch (err) {
+    console.error('[Leaderboard] New earnings merge skipped:', err.message);
   }
 
   const rows = [...totals.values()]
