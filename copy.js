@@ -281,7 +281,7 @@ module.exports = {
   // ── Leaderboards ──────────────────────────────────────────────────────────
   leaderboard: {
     allTimeTitle: 'All Time Leaderboard',
-    allTimeFooter: (when) => `Updated ${when}. Recalculated every time a campaign ends.`,
+    allTimeFooter: (when) => `Last updated: ${when}`,
     allTimeEmpty: 'No approved submissions yet.',
 
     campaignTitle: (label) => `🏆 ${label}`,
